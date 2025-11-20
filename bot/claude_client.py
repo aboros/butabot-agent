@@ -1,6 +1,7 @@
 """Claude client wrapper for thread-aware conversations."""
 
 import json
+import sys
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 from claude_agent_sdk import (
@@ -11,6 +12,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ToolResultBlock,
     ResultMessage,
+    SystemMessage,
     Message,
     HookMatcher,
     HookContext,
@@ -18,6 +20,11 @@ from claude_agent_sdk import (
 
 from .mcp_config import load_mcp_config
 from .session_manager import SessionManager
+
+
+def log(message: str, level: str = "INFO"):
+    """Log message with flush to ensure it appears in Docker logs."""
+    print(f"[{level}] ClaudeClient: {message}", file=sys.stderr, flush=True)
 
 
 class ClaudeClient:
@@ -225,21 +232,97 @@ class ClaudeClient:
         Yields:
             Messages from Claude (AssistantMessage, ToolUseBlock, etc.)
         """
-        # Get or create client (SDK maintains session automatically)
-        client = await self._get_or_create_client(thread_id)
-        
-        # Send message
-        await client.query(user_message)
-        
-        # Stream responses and extract session_id from ResultMessage
-        async for message in client.receive_response():
-            # Extract session_id from ResultMessage (SDK provides this)
-            if isinstance(message, ResultMessage):
-                session_id = message.session_id
-                # Store the SDK-provided session_id for potential future resume
-                self.session_manager.store_session(thread_id, session_id)
+        try:
+            log(f"Sending message to Claude for thread {thread_id}")
             
-            yield message
+            # Get or create client (SDK maintains session automatically)
+            client = await self._get_or_create_client(thread_id)
+            log(f"Got/created client for thread {thread_id}")
+            
+            # Send message
+            log(f"Calling client.query() with message: {user_message[:100]}")
+            await client.query(user_message)
+            log("client.query() completed, starting to receive response")
+            
+            # Stream responses and extract session_id from ResultMessage
+            message_count = 0
+            try:
+                log("Starting to iterate over receive_response()")
+                async for message in client.receive_response():
+                    message_count += 1
+                    message_type = type(message).__name__
+                    log(f"Received message #{message_count}: {message_type}")
+                    
+                    # Log SystemMessage details
+                    if isinstance(message, SystemMessage):
+                        subtype = getattr(message, 'subtype', 'unknown')
+                        data = getattr(message, 'data', {})
+                        log(f"  SystemMessage subtype: {subtype}")
+                        log(f"  SystemMessage data keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                        if isinstance(data, dict):
+                            # Log important data fields
+                            for key in ['message', 'status', 'error', 'info', 'type']:
+                                if key in data:
+                                    log(f"  SystemMessage.{key}: {str(data[key])[:200]}")
+                            # Log full data if it's small enough
+                            if len(str(data)) < 500:
+                                log(f"  SystemMessage full data: {data}")
+                        # Check if SystemMessage indicates an error or completion
+                        if isinstance(data, dict):
+                            if data.get('status') == 'error' or data.get('error'):
+                                log(f"  ⚠️ SystemMessage indicates error - this may cause receive_response() to stop", level="WARNING")
+                            if data.get('status') == 'complete' or data.get('complete'):
+                                log(f"  ℹ️ SystemMessage indicates completion - receive_response() may stop", level="INFO")
+                    
+                    # Extract session_id from ResultMessage (SDK provides this)
+                    if isinstance(message, ResultMessage):
+                        session_id = message.session_id
+                        # Store the SDK-provided session_id for potential future resume
+                        self.session_manager.store_session(thread_id, session_id)
+                        log(f"  ResultMessage session_id: {session_id}")
+                        log(f"  ResultMessage duration_ms: {message.duration_ms}")
+                        log(f"  ResultMessage is_error: {message.is_error}")
+                        log(f"  ResultMessage num_turns: {message.num_turns}")
+                        log(f"  ResultMessage total_cost_usd: {message.total_cost_usd}")
+                        log(f"Stored session_id {session_id} for thread {thread_id}")
+                        # ResultMessage typically ends the iteration, but we'll continue to see if more messages come
+                        log("  ℹ️ ResultMessage received - receive_response() should continue until this message")
+                    
+                    # Log AssistantMessage details
+                    if isinstance(message, AssistantMessage):
+                        log(f"  AssistantMessage model: {getattr(message, 'model', 'N/A')}")
+                        log(f"  AssistantMessage content blocks: {len(message.content)}")
+                        for i, block in enumerate(message.content):
+                            block_type = type(block).__name__
+                            log(f"    Block {i+1}: {block_type}")
+                            if isinstance(block, ToolUseBlock):
+                                log(f"      Tool: {block.name}, ID: {block.id}")
+                            elif isinstance(block, TextBlock):
+                                text_preview = block.text[:100] + "..." if len(block.text) > 100 else block.text
+                                log(f"      Text preview: {text_preview}")
+                    
+                    log(f"Yielding message #{message_count} of type {message_type}")
+                    yield message
+                    log(f"Successfully yielded message #{message_count}, waiting for next message...")
+                
+                log(f"receive_response() iteration completed. Total messages: {message_count}")
+            except StopAsyncIteration:
+                log(f"StopAsyncIteration raised after {message_count} messages - this is normal when iteration completes", level="INFO")
+            except Exception as iter_error:
+                log(f"Exception during receive_response() iteration after {message_count} messages: {iter_error}", level="ERROR")
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
+                raise
+            
+            log(f"Finished streaming {message_count} messages for thread {thread_id}")
+            
+        except Exception as e:
+            log(f"Error in send_message for thread {thread_id}: {e}", level="ERROR")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            raise
     
     async def get_text_response(self, thread_id: str, user_message: str) -> str:
         """

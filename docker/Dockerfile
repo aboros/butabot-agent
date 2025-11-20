@@ -34,6 +34,9 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD pgrep -f "python.*bot.app" || exit 1
 
+# Set Python to unbuffered mode for immediate log output in Docker
+ENV PYTHONUNBUFFERED=1
+
 # Run the bot
 CMD ["python", "-m", "bot.app"]
 
