@@ -8,9 +8,7 @@ services:
     env_file:
       - .env
     volumes:
-      # .mcp.json is copied into image during build (not mounted)
-      # Mount data directory (read-write) - Agent's working directory
-      # Agent's cwd is restricted to /app/data
+      # Mount data directory (read-write) - Agent's working directory (cwd)
       # You can mount any folder from host to /app/data or mount additional folders anywhere
       - ./data:/app/data:rw
       
@@ -32,9 +30,12 @@ services:
       # You can mount ANY folder from host anywhere in container:
       # - /any/path/on/host:/app/data/anywhere:rw
       
+      # Mount configuration files (read-only)
+      - ./.mcp.json:/app/.mcp.json:ro
+      - ./requirements.txt:/app/requirements.txt:ro
+      
       # Mount Python code for development (changes reflected immediately)
       - ./bot:/app/bot:ro
-      - ./main.py:/app/main.py:ro
       
       # Mount Docker socket so bot can run Docker commands for STDIO MCP servers
       - /var/run/docker.sock:/var/run/docker.sock:ro

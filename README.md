@@ -7,8 +7,8 @@ A Slack bot powered by Anthropic's Agent SDK that maintains conversation context
 - **Thread-aware conversations**: Maintains context within Slack threads using Agent SDK sessions
 - **MCP integration**: Supports MCP servers (Filesystem, Brave Search, Drupal MCP, etc.) via config file
 - **Tool approvals**: Interactive Slack buttons for approving/denying tool usage
-- **Security-focused**: Built-in filesystem and development tools disabled by default
-- **Limited tool access**: Only web search/fetch and skills enabled for safety
+- **Security-focused**: Filesystem tools enabled for Drupal development, Bash and other dev tools disabled by default
+- **Drupal-ready**: Configured for Drupal development with filesystem access
 - **Async processing**: Full async/await support for responsive interactions
 - **Docker support**: Ready for deployment on DigitalOcean or any container platform
 
@@ -22,28 +22,32 @@ The bot uses:
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 20+ (required for MCP servers)
-- Slack workspace with bot app created
-- Anthropic API key
-- Claude Code CLI (installed automatically with Agent SDK)
+- **Docker** and **Docker Compose** (installed on host machine)
+- **Slack workspace** with bot app created
+- **Anthropic API key** (stored in `.env` file)
+
+**Note**: Python, Node.js, and Claude Code CLI are all installed automatically inside the Docker container - you don't need to install them on your host machine.
 
 ## Setup
 
-### 1. Clone and Install Dependencies
+### 1. Clone Repository
 
 ```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+git clone <repository-url>
+cd butabot-agent
 ```
+
+**Note**: Dependencies are installed automatically when building the Docker image. The `venv/` folder is optional and only needed if you want to run Python scripts locally (outside Docker).
 
 ### 2. Configure Environment Variables
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your actual values:
 
 ```bash
 # Slack Configuration
@@ -54,8 +58,10 @@ SLACK_APP_TOKEN=xapp-your-app-token-here  # Required for Socket Mode
 # Anthropic Configuration
 ANTHROPIC_API_KEY=your-anthropic-api-key-here
 
-# MCP Configuration (optional)
-MCP_CONFIG_PATH=config/mcp.config.json
+# Drupal MCP Server Configuration (optional)
+DRUPAL_AUTH_USER=your-drupal-username
+DRUPAL_AUTH_PASSWORD=your-drupal-password
+DRUPAL_BASE_URL=http://your-site.ddev.site
 
 # Server Configuration
 PORT=3000
@@ -63,7 +69,17 @@ PORT=3000
 
 ### 3. Configure MCP Servers (Optional)
 
-Edit `.mcp.json` in the project root to add your MCP servers. The bot is configured with security in mind - built-in filesystem tools are disabled, so if you need filesystem access, you must use an MCP filesystem server:
+Copy `.mcp.json.example` to `.mcp.json` and customize it:
+
+```bash
+cp .mcp.json.example .mcp.json
+```
+
+Then edit `.mcp.json` to add your MCP servers. **Sensitive credentials should use environment variables** (e.g., `${DRUPAL_AUTH_USER}`) which are loaded from `.env` file.
+
+**Security Note**: `.mcp.json` is mounted as read-only, so the agent can read it but cannot modify it. **Never put secrets directly in `.mcp.json`** - always use environment variables (see "MCP Server Configuration" section below for details).
+
+The bot is configured for Drupal development with filesystem tools enabled. You can also add MCP servers for additional functionality:
 
 ```json
 {
@@ -77,7 +93,7 @@ Edit `.mcp.json` in the project root to add your MCP servers. The bot is configu
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-brave-search"],
       "env": {
-        "BRAVE_API_KEY": "your-brave-api-key"
+        "BRAVE_API_KEY": "${BRAVE-API-KEY}"
       }
     }
   }
@@ -85,9 +101,9 @@ Edit `.mcp.json` in the project root to add your MCP servers. The bot is configu
 ```
 
 **Note**: 
-- By default, the bot has no MCP servers configured and only has access to `WebSearch`, `WebFetch`, and `Skill` tools.
+- By default, the bot has filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`) enabled for Drupal development.
 - The agent's working directory is restricted to `/app/data` for security.
-- If using a filesystem MCP server, configure it to access `/app/data` (not the project root).
+- You can add MCP servers for additional functionality (Drupal MCP, Brave Search, etc.).
 
 ### 4. Create Slack App
 
@@ -109,15 +125,23 @@ Edit `.mcp.json` in the project root to add your MCP servers. The bot is configu
 
 ### 5. Run the Bot
 
-```bash
-# Activate virtual environment
-source venv/bin/activate
+The bot runs in Docker using Docker Compose:
 
-# Run the bot
-python main.py
+```bash
+# Build and start the bot
+docker compose up --build
+
+# Or run in background
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop the bot
+docker compose down
 ```
 
-The bot will start in Socket Mode and connect to Slack.
+The bot will start in Socket Mode and connect to Slack. See the [Docker Deployment](#docker-deployment) section for more details.
 
 ## Usage
 
@@ -188,7 +212,13 @@ volumes:
 
 ### 2. Configure Drupal MCP Server
 
-Edit `.mcp.json` to point to your Drupal site:
+If you haven't already, copy `.mcp.json.example` to `.mcp.json`:
+
+```bash
+cp .mcp.json.example .mcp.json
+```
+
+Then edit `.mcp.json` to point to your Drupal site. The example file already includes the Drupal MCP server configuration with environment variable placeholders:
 
 ```json
 {
@@ -196,21 +226,27 @@ Edit `.mcp.json` to point to your Drupal site:
     "drupal": {
       "command": "docker",
       "args": [
-        "run", "-i", "--rm",
-        "-e", "DRUPAL_AUTH_USER",
-        "-e", "DRUPAL_AUTH_PASSWORD",
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "DRUPAL_AUTH_USER",
+        "-e",
+        "DRUPAL_AUTH_PASSWORD",
         "--network=host",
         "ghcr.io/omedia/mcp-server-drupal:latest",
-        "--drupal-url=http://your-site.ddev.site"
+        "--drupal-url=${DRUPAL_BASE_URL}"
       ],
       "env": {
-        "DRUPAL_AUTH_USER": "your_username",
-        "DRUPAL_AUTH_PASSWORD": "your_password"
+        "DRUPAL_AUTH_USER": "${DRUPAL_AUTH_USER}",
+        "DRUPAL_AUTH_PASSWORD": "${DRUPAL_AUTH_PASSWORD}"
       }
     }
   }
 }
 ```
+
+**Important**: All secrets use environment variable placeholders (e.g., `${DRUPAL_AUTH_USER}`). Make sure these variables are set in your `.env` file. Never put actual secrets directly in `.mcp.json` as the Agent will be able to read that file.
 
 ### 3. Workflow
 
@@ -233,31 +269,32 @@ butabot-agent/
 │   └── session_manager.py # Thread-to-session mapping
 ├── docker/
 │   └── Dockerfile        # Docker container definition
-├── main.py               # Entry point
 ├── requirements.txt      # Python dependencies
 ├── docker-compose.yml    # Docker Compose config
+├── .env.example          # Example environment variables (copy to .env)
+├── .mcp.json.example     # Example MCP server config (copy to .mcp.json)
 ├── .mcp.json            # MCP server configurations (copied into image)
 └── README.md             # This file
 ```
 
-**Security Note**: The agent's working directory (`cwd`) is restricted to `/app/data` inside the container. You can mount any folder from the host to `/app/data` or mount additional folders anywhere in the container. Source code (`bot/`, `main.py`) and config (`.mcp.json`) are copied into the image, not mounted.
+**Security Note**: The agent's working directory (`cwd`) is restricted to `/app/data` inside the container. You can mount any folder from the host to `/app/data` or mount additional folders anywhere in the container. Source code (`bot/`) and config (`.mcp.json`) are copied into the image, not mounted.
 
 ## Docker Deployment
 
-### Local Development with Docker Compose
+The bot runs exclusively in Docker. Use Docker Compose for local development and production deployment.
 
 ```bash
 # Build and run
-docker-compose up --build
+docker compose up --build
 
 # Run in background
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop
-docker-compose down
+docker compose down
 ```
 
 ### DigitalOcean Droplet Deployment
@@ -279,41 +316,34 @@ sudo usermod -aG docker $USER
 #### 3. Clone and Setup
 
 ```bash
-# Clone repository
-git clone <your-repo-url> butabot-agent
-cd butabot-agent
+# Clone repository (adjust path as needed)
+git clone <your-repo-url> ~/butabot-agent
+cd ~/butabot-agent
 
-# Create .env file
+# Copy example files and configure
+cp .env.example .env
 nano .env
-# Paste your environment variables
+# Fill in your environment variables (tokens, API keys, etc.)
 
-# Create .mcp.json file for MCP server configuration
+cp .mcp.json.example .mcp.json
 nano .mcp.json
-# Paste your MCP server configurations (see example above)
+# Configure MCP servers (use environment variables for secrets)
 ```
 
 #### 4. Build and Run
 
 ```bash
-# Build Docker image
-docker build -f docker/Dockerfile -t butabot-agent .
-
-# Run container
-docker run -d \
-  --name butabot-agent \
-  --restart unless-stopped \
-  --env-file .env \
-  -v $(pwd)/data:/app/data:rw \
-  -v $(pwd)/bot:/app/bot:ro \
-  -v $(pwd)/main.py:/app/main.py:ro \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  butabot-agent
+# Build and start with Docker Compose
+docker compose up --build -d
 
 # View logs
-docker logs -f butabot-agent
+docker compose logs -f
+
+# Stop
+docker compose down
 ```
 
-#### 5. Systemd Service (Optional)
+#### 5. Systemd Service (Recommended for Production)
 
 Create `/etc/systemd/system/butabot-agent.service`:
 
@@ -324,17 +354,20 @@ After=docker.service
 Requires=docker.service
 
 [Service]
-Type=simple
-User=root
-WorkingDirectory=/root/butabot-agent
-ExecStart=/usr/bin/docker start -a butabot-agent
-ExecStop=/usr/bin/docker stop butabot-agent
-Restart=always
+Type=oneshot
+RemainAfterExit=yes
+User=your-username
+WorkingDirectory=/home/your-username/butabot-agent
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+**Important**: Replace `your-username` with your actual username and update `WorkingDirectory` to match your clone location.
 
 Enable and start:
 
@@ -342,6 +375,12 @@ Enable and start:
 sudo systemctl enable butabot-agent
 sudo systemctl start butabot-agent
 sudo systemctl status butabot-agent
+```
+
+**Note**: Make sure your user is in the `docker` group:
+```bash
+sudo usermod -aG docker $USER
+# Log out and back in for group changes to take effect
 ```
 
 ## Environment Variables
@@ -352,10 +391,75 @@ sudo systemctl status butabot-agent
 | `SLACK_SIGNING_SECRET` | Slack signing secret | Yes |
 | `SLACK_APP_TOKEN` | Slack app-level token (xapp-...) for Socket Mode | Yes |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
-| `MCP_CONFIG_PATH` | Path to MCP config JSON file | No (default: `.mcp.json` in project root) |
+| `DRUPAL_AUTH_USER` | Drupal username for MCP server authentication | No (required if using Drupal MCP) |
+| `DRUPAL_AUTH_PASSWORD` | Drupal password for MCP server authentication | No (required if using Drupal MCP) |
+| `DRUPAL_BASE_URL` | Drupal site URL (e.g., http://site.ddev.site) | No (required if using Drupal MCP) |
 | `PORT` | HTTP server port (for health checks) | No (default: `3000`) |
 
 ## MCP Server Configuration
+
+### ⚠️ Security Best Practice: Never Put Secrets in `.mcp.json`
+
+**CRITICAL**: Even though `.mcp.json` is gitignored, **never put secrets, API keys, tokens, or passwords directly in `.mcp.json`**. Here's why:
+
+1. **Agent can read it**: The agent can read `.mcp.json` (it's mounted read-only), so secrets would be exposed
+2. **Version control risk**: If `.mcp.json` is accidentally committed, secrets leak
+3. **Container image risk**: `.mcp.json` is copied into the Docker image, so secrets would be baked in
+4. **Sharing risk**: If you share `.mcp.json` with team members, secrets are exposed
+
+**✅ Correct Approach**: Use environment variables with `${VAR_NAME}` syntax:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "env": {
+        "API_KEY": "${MY_API_KEY}",           // ✅ Good: References .env
+        "PASSWORD": "${MY_PASSWORD}"          // ✅ Good: References .env
+      },
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}" // ✅ Good: References .env
+      }
+    }
+  }
+}
+```
+
+**❌ Wrong Approach**: Hardcoding secrets:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "env": {
+        "API_KEY": "sk-1234567890abcdef",     // ❌ Bad: Secret in config
+        "PASSWORD": "mypassword123"            // ❌ Bad: Secret in config
+      }
+    }
+  }
+}
+```
+
+**How to set it up:**
+
+1. Add secrets to `.env` file (gitignored):
+   ```bash
+   MY_API_KEY=sk-1234567890abcdef
+   MY_PASSWORD=secure-password
+   API_TOKEN=your-token-here
+   ```
+
+2. Reference them in `.mcp.json` using `${VAR_NAME}`:
+   ```json
+   {
+     "env": {
+       "API_KEY": "${MY_API_KEY}"
+     }
+   }
+   ```
+
+3. Docker Compose automatically loads `.env` → Variables available in container
+4. MCP SDK substitutes values → Secrets resolved at runtime from environment
 
 The bot supports three types of MCP servers:
 
@@ -367,7 +471,7 @@ The bot supports three types of MCP servers:
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-name"],
     "env": {
-      "API_KEY": "value"
+      "API_KEY": "${MY_API_KEY}"  // ✅ Use environment variable, not hardcoded value
     }
   }
 }
@@ -381,7 +485,7 @@ The bot supports three types of MCP servers:
     "type": "http",
     "url": "https://mcp-server.example.com",
     "headers": {
-      "Authorization": "Bearer token"
+      "Authorization": "Bearer ${API_TOKEN}"  // ✅ Use environment variable
     }
   }
 }
@@ -395,18 +499,24 @@ The bot supports three types of MCP servers:
     "type": "sse",
     "url": "https://mcp-server.example.com/sse",
     "headers": {
-      "Authorization": "Bearer token"
+      "Authorization": "Bearer ${API_TOKEN}"  // ✅ Use environment variable
     }
   }
 }
+```
+
+**Remember**: Add the actual values to your `.env` file:
+```bash
+MY_API_KEY=your-actual-api-key-here
+API_TOKEN=your-actual-token-here
 ```
 
 ## Troubleshooting
 
 ### Bot not responding
 
-1. Check logs: `docker logs butabot-agent` or console output
-2. Verify environment variables are set correctly
+1. Check logs: `docker compose logs -f` or `docker compose logs` (if using Docker Compose)
+2. Verify environment variables are set correctly in `.env` file
 3. Ensure bot is invited to the channel
 4. Check Slack app permissions and scopes
 
@@ -421,8 +531,8 @@ The bot supports three types of MCP servers:
 1. Verify `.mcp.json` syntax is valid JSON (located in project root)
 2. Check that Node.js is installed (required for npx)
 3. Test MCP server command manually: `npx -y @modelcontextprotocol/server-filesystem /tmp`
-4. Check environment variables for MCP servers
-5. Verify `.mcp.json` is mounted correctly in Docker: `docker exec butabot-agent cat /app/.mcp.json`
+4. Check environment variables for MCP servers are set in `.env` file
+5. Verify `.mcp.json` is mounted correctly: `docker compose exec bot cat /app/.mcp.json` (or `docker exec butabot-agent cat /app/.mcp.json` if using docker run)
 
 ### Session not maintaining context
 
@@ -439,19 +549,7 @@ The bot has a security-focused configuration that disables most built-in tools. 
 3. Remove tools you want to enable from the list
 4. Rebuild and restart the container
 
-**Security Note**: Enabling `Bash` or filesystem tools (`Read`, `Write`, etc.) allows the bot to execute system commands and access files. Only enable these if you trust the bot and have proper access controls in place.
-
-## Development
-
-### Running Tests
-
-```bash
-# Activate venv
-source venv/bin/activate
-
-# Run with debug logging
-python main.py
-```
+**Security Note**: Enabling `Bash` or filesystem tools (`Read`, `Write`, etc.) allows the bot to execute system commands in the container. Only enable these if you trust the bot and have proper access controls in place.
 
 ### Code Structure
 

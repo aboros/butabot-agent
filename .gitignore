@@ -30,9 +30,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Docker
-.dockerignore
-
 # Data directory (contains files created by MCP tools and agent work)
 data/
 

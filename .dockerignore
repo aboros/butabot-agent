@@ -1,0 +1,50 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# Data directory (mounted, not copied)
+data/
+
+# Logs
+*.log
+
+# Documentation
+README.md
+*.md
+
+# Docker files (don't copy Dockerfile into itself)
+docker/
+docker-compose.yml
+.dockerignore
+
+# MCP config (copied explicitly, but ignore example)
+.mcp.json.example
+
