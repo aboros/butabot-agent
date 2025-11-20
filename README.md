@@ -63,14 +63,14 @@ PORT=3000
 
 ### 3. Configure MCP Servers (Optional)
 
-Edit `config/mcp.config.json` to add your MCP servers. The bot is configured with security in mind - built-in filesystem tools are disabled, so if you need filesystem access, you must use an MCP filesystem server:
+Edit `.mcp.json` in the project root to add your MCP servers. The bot is configured with security in mind - built-in filesystem tools are disabled, so if you need filesystem access, you must use an MCP filesystem server:
 
 ```json
 {
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/agent"],
       "env": {}
     },
     "brave-search": {
@@ -84,7 +84,10 @@ Edit `config/mcp.config.json` to add your MCP servers. The bot is configured wit
 }
 ```
 
-**Note**: By default, the bot has no MCP servers configured and only has access to `WebSearch`, `WebFetch`, and `Skill` tools. This is a security-focused configuration that prevents filesystem access and command execution.
+**Note**: 
+- By default, the bot has no MCP servers configured and only has access to `WebSearch`, `WebFetch`, and `Skill` tools.
+- The agent's working directory is restricted to `/app/agent/workspace` for security.
+- If using a filesystem MCP server, configure it to access `/app/agent` (not the project root).
 
 ### 4. Create Slack App
 
@@ -140,40 +143,101 @@ When Claude wants to use a tool:
 
 ### Available Tools
 
-The bot has a security-focused configuration with most tools disabled. Only the following tools are available:
+The bot is configured for Drupal development with filesystem tools enabled:
 
 **Enabled Tools:**
+- **Filesystem tools**: `Read`, `Write`, `Edit`, `Glob`, `Grep` - For working with Drupal site files
 - **WebSearch** - Search the web for current information
 - **WebFetch** - Fetch and analyze web page content
 - **Skill** - Execute specialized skills (if configured)
+- **MCP Tools** - Drupal MCP server tools (configured in `.mcp.json`)
 
 **Disabled Tools (for security):**
-- Filesystem tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
-- Development tools: `Task`, `Bash`, `TodoWrite`, `NotebookEdit`, `ExitPlanMode`
-- Process management: `BashOutput`, `KillBash`
+- **Bash** - Command execution (disabled by default, enable if you need Drush/Composer)
+- **BashOutput**, **KillBash** - Process management
+- **Task**, **TodoWrite**, **NotebookEdit**, **ExitPlanMode** - Other development tools
 
-This configuration prevents the bot from accessing the filesystem or executing system commands, making it safer for production use. To enable additional tools, modify `bot/claude_client.py` and update the `disallowed_tools` list.
+**Note**: The agent's working directory is restricted to `/app/agent/workspace`. Mount your Drupal site folders in `docker-compose.yml` to give the agent access to your Drupal codebase. To enable Bash or other tools, modify `bot/claude_client.py` and update the `disallowed_tools` list.
+
+## Drupal Development Setup
+
+The bot is configured for Drupal development with filesystem tools enabled. To mount your Drupal site:
+
+### 1. Edit `docker-compose.yml`
+
+Uncomment and configure the Drupal mount points:
+
+```yaml
+volumes:
+  # Option 1: Mount entire docroot
+  - /path/to/drupal/docroot:/app/agent/workspace/drupal:rw
+  
+  # Option 2: Mount specific folders (recommended)
+  - /path/to/drupal/docroot/modules/custom:/app/agent/workspace/drupal/modules/custom:rw
+  - /path/to/drupal/docroot/themes/custom:/app/agent/workspace/drupal/themes/custom:rw
+  - /path/to/drupal/docroot/sites/default:/app/agent/workspace/drupal/sites/default:rw
+  
+  # Optional: Mount CLAUDE.md for project guidance
+  - /path/to/drupal/CLAUDE.md:/app/agent/workspace/CLAUDE.md:ro
+```
+
+### 2. Configure Drupal MCP Server
+
+Edit `.mcp.json` to point to your Drupal site:
+
+```json
+{
+  "mcpServers": {
+    "drupal": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DRUPAL_AUTH_USER",
+        "-e", "DRUPAL_AUTH_PASSWORD",
+        "--network=host",
+        "ghcr.io/omedia/mcp-server-drupal:latest",
+        "--drupal-url=http://your-site.ddev.site"
+      ],
+      "env": {
+        "DRUPAL_AUTH_USER": "your_username",
+        "DRUPAL_AUTH_PASSWORD": "your_password"
+      }
+    }
+  }
+}
+```
+
+### 3. Workflow
+
+- **Filesystem tools** (`Read`, `Write`, `Edit`, `Glob`, `Grep`) - For file operations
+- **Drupal MCP server** - For Drupal-specific operations (enable modules, clear cache, etc.)
+- **CLAUDE.md** - For project-specific guidelines and patterns
+
+The agent can now create modules, modify themes, update configuration files, and use Drupal MCP tools for site operations.
 
 ## Project Structure
 
 ```
 butabot-agent/
+├── agent/                  # Agent-accessible workspace (sandboxed)
+│   ├── data/              # Files created by MCP tools
+│   └── workspace/         # Agent's working directory (cwd)
 ├── bot/
-│   ├── __init__.py          # Package init
-│   ├── app.py              # Slack Bolt app and event handlers
-│   ├── claude_client.py    # ClaudeSDKClient wrapper
-│   ├── tool_approval.py    # Tool approval workflow
-│   ├── session_manager.py  # Thread-to-session mapping
-│   └── mcp_config.py       # MCP config loader
-├── config/
-│   └── mcp.config.json     # MCP server configurations
+│   ├── __init__.py        # Package init
+│   ├── app.py            # Slack Bolt app and event handlers
+│   ├── claude_client.py  # ClaudeSDKClient wrapper
+│   ├── tool_approval.py  # Tool approval workflow
+│   └── session_manager.py # Thread-to-session mapping
 ├── docker/
-│   └── Dockerfile          # Docker container definition
-├── main.py                 # Entry point
-├── requirements.txt        # Python dependencies
-├── docker-compose.yml      # Docker Compose config
-└── README.md               # This file
+│   └── Dockerfile        # Docker container definition
+├── main.py               # Entry point
+├── requirements.txt      # Python dependencies
+├── docker-compose.yml    # Docker Compose config
+├── .mcp.json            # MCP server configurations (read-only)
+└── README.md             # This file
 ```
+
+**Security Note**: The agent's working directory (`cwd`) is restricted to `/app/agent/workspace` inside the container. When Bash tool is enabled, the agent can only access files within the `agent/` directory, not the project root or bot code.
 
 ## Docker Deployment
 
@@ -220,10 +284,9 @@ cd butabot-agent
 nano .env
 # Paste your environment variables
 
-# Create config directory and MCP config
-mkdir -p config
-nano config/mcp.config.json
-# Paste your MCP server configurations
+# Create .mcp.json file for MCP server configuration
+nano .mcp.json
+# Paste your MCP server configurations (see example above)
 ```
 
 #### 4. Build and Run
@@ -237,7 +300,10 @@ docker run -d \
   --name butabot-agent \
   --restart unless-stopped \
   --env-file .env \
-  -v $(pwd)/config:/app/config:ro \
+  -v $(pwd)/.mcp.json:/app/.mcp.json:ro \
+  -v $(pwd)/agent:/app/agent:rw \
+  -v $(pwd)/bot:/app/bot:ro \
+  -v $(pwd)/main.py:/app/main.py:ro \
   butabot-agent
 
 # View logs
@@ -283,7 +349,7 @@ sudo systemctl status butabot-agent
 | `SLACK_SIGNING_SECRET` | Slack signing secret | Yes |
 | `SLACK_APP_TOKEN` | Slack app-level token (xapp-...) for Socket Mode | Yes |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
-| `MCP_CONFIG_PATH` | Path to MCP config JSON file | No (default: `config/mcp.config.json`) |
+| `MCP_CONFIG_PATH` | Path to MCP config JSON file | No (default: `.mcp.json` in project root) |
 | `PORT` | HTTP server port (for health checks) | No (default: `3000`) |
 
 ## MCP Server Configuration
@@ -349,10 +415,11 @@ The bot supports three types of MCP servers:
 
 ### MCP servers not loading
 
-1. Verify `mcp.config.json` syntax is valid JSON
+1. Verify `.mcp.json` syntax is valid JSON (located in project root)
 2. Check that Node.js is installed (required for npx)
 3. Test MCP server command manually: `npx -y @modelcontextprotocol/server-filesystem /tmp`
 4. Check environment variables for MCP servers
+5. Verify `.mcp.json` is mounted correctly in Docker: `docker exec butabot-agent cat /app/.mcp.json`
 
 ### Session not maintaining context
 

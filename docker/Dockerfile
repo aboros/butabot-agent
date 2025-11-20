@@ -31,11 +31,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Try latest version to see if HTTP MCP server support is available
 RUN npm install -g @anthropic-ai/claude-code@latest
 
-# Copy application code
-COPY . .
+# Copy only necessary application files (not entire project root)
+COPY bot/ ./bot/
+COPY main.py .
 
-# Create config directory if it doesn't exist
-RUN mkdir -p config
+# Create agent workspace directories
+RUN mkdir -p /app/agent/data /app/agent/workspace
 
 # Expose port (for health checks, though Socket Mode doesn't need it)
 EXPOSE 3000

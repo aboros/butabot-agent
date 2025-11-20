@@ -10,13 +10,28 @@ services:
     volumes:
       # Mount .mcp.json from project root (SDK auto-discovers this)
       - ./.mcp.json:/app/.mcp.json:ro
-      # Mount config directory for easy MCP config updates
-      - ./config:/app/config:ro
-      # Mount data directory to persist files created by MCP tools (like filesystem server)
-      - ./data:/app/data:rw
+      
+      # Mount agent workspace (read-write) - ONLY this is accessible to agent
+      # Agent's cwd is restricted to /app/agent/workspace
+      - ./agent:/app/agent:rw
+      
+      # Mount Drupal site into agent workspace for development
+      # Option 1: Mount entire docroot (uncomment and set path)
+      # - /path/to/drupal/docroot:/app/agent/workspace/drupal:rw
+      
+      # Option 2: Mount specific folders (recommended - more secure)
+      # Uncomment and customize paths as needed:
+      # - /path/to/drupal/docroot/modules/custom:/app/agent/workspace/drupal/modules/custom:rw
+      # - /path/to/drupal/docroot/themes/custom:/app/agent/workspace/drupal/themes/custom:rw
+      # - /path/to/drupal/docroot/sites/default:/app/agent/workspace/drupal/sites/default:rw
+      
+      # Optional: Mount CLAUDE.md for project-specific guidance
+      # - /path/to/drupal/CLAUDE.md:/app/agent/workspace/CLAUDE.md:ro
+      
       # Mount Python code for development (changes reflected immediately)
       - ./bot:/app/bot:ro
       - ./main.py:/app/main.py:ro
+      
       # Mount Docker socket so bot can run Docker commands for STDIO MCP servers
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:

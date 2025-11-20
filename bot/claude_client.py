@@ -59,17 +59,19 @@ class ClaudeClient:
         mcp_config_path = Path("/app/.mcp.json")
         
         # Build options - SDK will handle parsing .mcp.json
-        # Disable built-in filesystem tools and other unnecessary tools
-        # Only allow: WebSearch, WebFetch, Skill
+        # Enable filesystem tools (Read, Write, Edit, Glob, Grep) for Drupal development
+        # Restrict agent's working directory to /app/agent/workspace for security
+        # Agent can access mounted Drupal site folders within the workspace
         self.base_options = ClaudeAgentOptions(
             mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
+            cwd="/app/agent/workspace",  # Restrict agent to workspace only
             disallowed_tools=[
-                # Filesystem tools
-                "Read", "Write", "Edit", "Glob", "Grep",
-                # Development tools
-                "Task", "Bash", "TodoWrite", "NotebookEdit", "ExitPlanMode",
-                # Process management
-                "BashOutput", "KillBash",
+                # Keep Bash disabled for security (enable if you need Drush/Composer commands)
+                # Note: Drupal MCP server can handle Drupal operations without Bash
+                "Bash", "BashOutput", "KillBash",
+                # Keep other dev tools disabled
+                "Task", "TodoWrite", "NotebookEdit", "ExitPlanMode",
+                # Filesystem tools (Read, Write, Edit, Glob, Grep) are now ENABLED
             ],
         )
     

@@ -33,6 +33,7 @@ Thumbs.db
 # Docker
 .dockerignore
 
-# Data directory (contains files created by MCP tools)
-data/
+# Agent workspace (contains files created by MCP tools and agent work)
+agent/data/
+agent/workspace/
 
