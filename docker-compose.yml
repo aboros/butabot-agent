@@ -11,6 +11,9 @@ services:
       - ./config:/app/config:ro
       # Mount data directory to persist files created by MCP tools (like filesystem server)
       - ./data:/app/data:rw
+      # Mount Python code for development (changes reflected immediately)
+      - ./bot:/app/bot:ro
+      - ./main.py:/app/main.py:ro
     ports:
       - "3000:3000"
     restart: unless-stopped
