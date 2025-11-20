@@ -314,6 +314,11 @@ class ButabotApp:
                                 
                                 log(f"AssistantMessage has {len(message.content)} blocks, has_tool_use={has_tool_use}, has_api_error={has_api_error}")
                                 
+                                # Skip sending if message contains ToolUseBlocks (handled by PreToolUse hook)
+                                if has_tool_use:
+                                    log("Skipping AssistantMessage with ToolUseBlocks (handled by PreToolUse hook)")
+                                    continue
+                                
                                 # Format and send the message
                                 formatted_blocks = self._format_assistant_message(message)
                                 
