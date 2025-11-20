@@ -60,11 +60,11 @@ class ClaudeClient:
         
         # Build options - SDK will handle parsing .mcp.json
         # Enable filesystem tools (Read, Write, Edit, Glob, Grep) for Drupal development
-        # Restrict agent's working directory to /app/agent/workspace for security
-        # Agent can access mounted Drupal site folders within the workspace
+        # Restrict agent's working directory to /app/data for security
+        # Agent can access any folders mounted in docker-compose.yml
         self.base_options = ClaudeAgentOptions(
             mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
-            cwd="/app/agent/workspace",  # Restrict agent to workspace only
+            cwd="/app/data",  # Agent's working directory
             disallowed_tools=[
                 # Keep Bash disabled for security (enable if you need Drush/Composer commands)
                 # Note: Drupal MCP server can handle Drupal operations without Bash

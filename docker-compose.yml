@@ -8,25 +8,29 @@ services:
     env_file:
       - .env
     volumes:
-      # Mount .mcp.json from project root (SDK auto-discovers this)
-      - ./.mcp.json:/app/.mcp.json:ro
+      # .mcp.json is copied into image during build (not mounted)
+      # Mount data directory (read-write) - Agent's working directory
+      # Agent's cwd is restricted to /app/data
+      # You can mount any folder from host to /app/data or mount additional folders anywhere
+      - ./data:/app/data:rw
       
-      # Mount agent workspace (read-write) - ONLY this is accessible to agent
-      # Agent's cwd is restricted to /app/agent/workspace
-      - ./agent:/app/agent:rw
+      # Mount Drupal site or any other folders for agent access
+      # Option 1: Mount entire docroot directly as data directory
+      # - /path/to/drupal/docroot:/app/data:rw
       
-      # Mount Drupal site into agent workspace for development
-      # Option 1: Mount entire docroot (uncomment and set path)
-      # - /path/to/drupal/docroot:/app/agent/workspace/drupal:rw
+      # Option 2: Mount docroot as subdirectory (recommended - more flexible)
+      # - /path/to/drupal/docroot:/app/data/drupal:rw
       
-      # Option 2: Mount specific folders (recommended - more secure)
-      # Uncomment and customize paths as needed:
-      # - /path/to/drupal/docroot/modules/custom:/app/agent/workspace/drupal/modules/custom:rw
-      # - /path/to/drupal/docroot/themes/custom:/app/agent/workspace/drupal/themes/custom:rw
-      # - /path/to/drupal/docroot/sites/default:/app/agent/workspace/drupal/sites/default:rw
+      # Option 3: Mount specific folders (most secure)
+      # - /path/to/drupal/docroot/modules/custom:/app/data/drupal/modules/custom:rw
+      # - /path/to/drupal/docroot/themes/custom:/app/data/drupal/themes/custom:rw
+      # - /path/to/drupal/docroot/sites/default:/app/data/drupal/sites/default:rw
       
       # Optional: Mount CLAUDE.md for project-specific guidance
-      # - /path/to/drupal/CLAUDE.md:/app/agent/workspace/CLAUDE.md:ro
+      # - /path/to/drupal/CLAUDE.md:/app/data/CLAUDE.md:ro
+      
+      # You can mount ANY folder from host anywhere in container:
+      # - /any/path/on/host:/app/data/anywhere:rw
       
       # Mount Python code for development (changes reflected immediately)
       - ./bot:/app/bot:ro

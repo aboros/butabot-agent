@@ -34,9 +34,10 @@ RUN npm install -g @anthropic-ai/claude-code@latest
 # Copy only necessary application files (not entire project root)
 COPY bot/ ./bot/
 COPY main.py .
+COPY .mcp.json .
 
-# Create agent workspace directories
-RUN mkdir -p /app/agent/data /app/agent/workspace
+# Create data directory for agent workspace
+RUN mkdir -p /app/data
 
 # Expose port (for health checks, though Socket Mode doesn't need it)
 EXPOSE 3000

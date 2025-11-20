@@ -86,8 +86,8 @@ Edit `.mcp.json` in the project root to add your MCP servers. The bot is configu
 
 **Note**: 
 - By default, the bot has no MCP servers configured and only has access to `WebSearch`, `WebFetch`, and `Skill` tools.
-- The agent's working directory is restricted to `/app/agent/workspace` for security.
-- If using a filesystem MCP server, configure it to access `/app/agent` (not the project root).
+- The agent's working directory is restricted to `/app/data` for security.
+- If using a filesystem MCP server, configure it to access `/app/data` (not the project root).
 
 ### 4. Create Slack App
 
@@ -157,7 +157,7 @@ The bot is configured for Drupal development with filesystem tools enabled:
 - **BashOutput**, **KillBash** - Process management
 - **Task**, **TodoWrite**, **NotebookEdit**, **ExitPlanMode** - Other development tools
 
-**Note**: The agent's working directory is restricted to `/app/agent/workspace`. Mount your Drupal site folders in `docker-compose.yml` to give the agent access to your Drupal codebase. To enable Bash or other tools, modify `bot/claude_client.py` and update the `disallowed_tools` list.
+**Note**: The agent's working directory is restricted to `/app/data`. Mount your Drupal site folders (or any folders) in `docker-compose.yml` to give the agent access. You can mount folders from anywhere on the host. To enable Bash or other tools, modify `bot/claude_client.py` and update the `disallowed_tools` list.
 
 ## Drupal Development Setup
 
@@ -169,16 +169,21 @@ Uncomment and configure the Drupal mount points:
 
 ```yaml
 volumes:
-  # Option 1: Mount entire docroot
-  - /path/to/drupal/docroot:/app/agent/workspace/drupal:rw
+  # Base data directory (agent's cwd)
+  - ./data:/app/data:rw
   
-  # Option 2: Mount specific folders (recommended)
-  - /path/to/drupal/docroot/modules/custom:/app/agent/workspace/drupal/modules/custom:rw
-  - /path/to/drupal/docroot/themes/custom:/app/agent/workspace/drupal/themes/custom:rw
-  - /path/to/drupal/docroot/sites/default:/app/agent/workspace/drupal/sites/default:rw
+  # Option 1: Mount entire docroot directly as data directory
+  # - /path/to/drupal/docroot:/app/data:rw
+  
+  # Option 2: Mount docroot as subdirectory (recommended)
+  # - /path/to/drupal/docroot:/app/data/drupal:rw
+  
+  # Option 3: Mount specific folders (most secure)
+  # - /path/to/drupal/docroot/modules/custom:/app/data/drupal/modules/custom:rw
+  # - /path/to/drupal/docroot/themes/custom:/app/data/drupal/themes/custom:rw
   
   # Optional: Mount CLAUDE.md for project guidance
-  - /path/to/drupal/CLAUDE.md:/app/agent/workspace/CLAUDE.md:ro
+  # - /path/to/drupal/CLAUDE.md:/app/data/CLAUDE.md:ro
 ```
 
 ### 2. Configure Drupal MCP Server
@@ -219,9 +224,7 @@ The agent can now create modules, modify themes, update configuration files, and
 
 ```
 butabot-agent/
-├── agent/                  # Agent-accessible workspace (sandboxed)
-│   ├── data/              # Files created by MCP tools
-│   └── workspace/         # Agent's working directory (cwd)
+├── data/                  # Agent's working directory (mounted to /app/data)
 ├── bot/
 │   ├── __init__.py        # Package init
 │   ├── app.py            # Slack Bolt app and event handlers
@@ -233,11 +236,11 @@ butabot-agent/
 ├── main.py               # Entry point
 ├── requirements.txt      # Python dependencies
 ├── docker-compose.yml    # Docker Compose config
-├── .mcp.json            # MCP server configurations (read-only)
+├── .mcp.json            # MCP server configurations (copied into image)
 └── README.md             # This file
 ```
 
-**Security Note**: The agent's working directory (`cwd`) is restricted to `/app/agent/workspace` inside the container. When Bash tool is enabled, the agent can only access files within the `agent/` directory, not the project root or bot code.
+**Security Note**: The agent's working directory (`cwd`) is restricted to `/app/data` inside the container. You can mount any folder from the host to `/app/data` or mount additional folders anywhere in the container. Source code (`bot/`, `main.py`) and config (`.mcp.json`) are copied into the image, not mounted.
 
 ## Docker Deployment
 
@@ -300,10 +303,10 @@ docker run -d \
   --name butabot-agent \
   --restart unless-stopped \
   --env-file .env \
-  -v $(pwd)/.mcp.json:/app/.mcp.json:ro \
-  -v $(pwd)/agent:/app/agent:rw \
+  -v $(pwd)/data:/app/data:rw \
   -v $(pwd)/bot:/app/bot:ro \
   -v $(pwd)/main.py:/app/main.py:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
   butabot-agent
 
 # View logs
