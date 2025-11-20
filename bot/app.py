@@ -1,17 +1,19 @@
 """Slack Bolt app for Butabot Agent."""
 
 import asyncio
+import json
 import os
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from dotenv import load_dotenv
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
+from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock, ToolResultBlock
+
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
-from .tool_approval import ToolApprovalManager
 
 
 # Load environment variables
@@ -32,17 +34,121 @@ class ButabotApp:
         # Initialize components
         self.session_manager = SessionManager()
         self.slack_client = AsyncWebClient(token=os.getenv("SLACK_BOT_TOKEN"))
-        self.tool_approval_manager = ToolApprovalManager(self.slack_client)
         
-        # Initialize Claude client with approval callback
-        # Note: We'll create approval callbacks per channel when needed
+        # Initialize Claude client (feedback callback will be set per message)
         self.claude_client = ClaudeClient(
             session_manager=self.session_manager,
-            tool_approval_callback=None,  # Will be set per message
+            feedback_callback=None,  # Will be set per message
         )
         
         # Register event handlers
         self._register_handlers()
+    
+    def _create_feedback_callback(self, thread_ts: str, say: Callable) -> Callable[[str, str], Any]:
+        """
+        Create a feedback callback function that uses say() to send messages.
+        
+        Args:
+            thread_ts: Slack thread timestamp
+            say: Slack say function
+            
+        Returns:
+            Async callback function that takes (thread_id, feedback_message)
+        """
+        async def feedback_callback(thread_id: str, feedback_message: str) -> None:
+            """Send feedback message to Slack."""
+            try:
+                await say(feedback_message, thread_ts=thread_ts)
+            except Exception as e:
+                print(f"Error sending feedback message: {e}")
+        
+        return feedback_callback
+    
+    def _format_assistant_message(self, message: AssistantMessage) -> str:
+        """
+        Format AssistantMessage with detailed information about its content.
+        
+        Args:
+            message: AssistantMessage instance
+            
+        Returns:
+            Formatted string with message details
+        """
+        lines = [f"📝 *AssistantMessage*"]
+        
+        # Count blocks by type
+        text_blocks = []
+        tool_use_blocks = []
+        tool_result_blocks = []
+        
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                text_blocks.append(block)
+            elif isinstance(block, ToolUseBlock):
+                tool_use_blocks.append(block)
+            elif isinstance(block, ToolResultBlock):
+                tool_result_blocks.append(block)
+        
+        # Add block counts
+        if text_blocks:
+            lines.append(f"├─ TextBlock ({len(text_blocks)}):")
+            for i, block in enumerate(text_blocks, 1):
+                # Show full text content (no truncation for text blocks)
+                # Replace newlines with spaces for cleaner display in Slack
+                text_content = block.text.replace(chr(10), ' ')
+                lines.append(f"│  {i}. {text_content}")
+        
+        if tool_use_blocks:
+            lines.append(f"├─ ToolUseBlock ({len(tool_use_blocks)}):")
+            for i, block in enumerate(tool_use_blocks, 1):
+                tool_input_str = self._format_tool_input(block.input)
+                lines.append(f"│  {i}. `{block.name}`")
+                lines.append(f"│     Input: ```{tool_input_str}```")
+        
+        if tool_result_blocks:
+            lines.append(f"├─ ToolResultBlock ({len(tool_result_blocks)}):")
+            for i, block in enumerate(tool_result_blocks, 1):
+                status = "❌ Error" if block.is_error else "✅ Success"
+                result_preview = self._format_tool_result_preview(block.content)
+                lines.append(f"│  {i}. {status}")
+                lines.append(f"│     Result: {result_preview}")
+        
+        if not text_blocks and not tool_use_blocks and not tool_result_blocks:
+            lines.append("└─ (empty message)")
+        
+        return "\n".join(lines)
+    
+    def _format_tool_input(self, tool_input: Dict[str, Any]) -> str:
+        """Format tool input for display."""
+        try:
+            formatted = json.dumps(tool_input, indent=2)
+            # Truncate if too long
+            if len(formatted) > 200:
+                return formatted[:200] + "..."
+            return formatted
+        except Exception:
+            return str(tool_input)[:200]
+    
+    def _format_tool_result_preview(self, result: Any) -> str:
+        """Format tool result preview for display."""
+        try:
+            if result is None:
+                return "(No result)"
+            elif isinstance(result, str):
+                if len(result) > 100:
+                    return result[:100] + "..."
+                return result
+            elif isinstance(result, list):
+                if len(result) > 3:
+                    return f"[{len(result)} items]"
+                return str(result)[:100]
+            elif isinstance(result, dict):
+                return f"{{...{len(result)} keys...}}"
+            else:
+                result_str = str(result)
+                return result_str[:100] + "..." if len(result_str) > 100 else result_str
+        except Exception:
+            return str(result)[:100]
     
     def _register_handlers(self):
         """Register Slack event and action handlers."""
@@ -67,44 +173,22 @@ class ButabotApp:
                 await say("Hello! How can I help you?", thread_ts=thread_ts)
                 return
             
-            # Create approval callback for this channel
-            approval_callback = await self.tool_approval_manager.create_approval_callback(channel_id)
+            # Create feedback callback for this thread
+            feedback_callback = self._create_feedback_callback(thread_ts, say)
+            
+            # Set feedback callback for this thread on the main client
+            self.claude_client.set_feedback_callback(thread_ts, feedback_callback)
             
             # Send "thinking" message
-            thinking_msg = await say("🤔 Thinking...", thread_ts=thread_ts)
+            await say("🤔 Thinking...", thread_ts=thread_ts)
             
             try:
-                # Create a temporary client with approval callback for this thread
-                temp_client = ClaudeClient(
-                    session_manager=self.session_manager,
-                    tool_approval_callback=approval_callback,
-                    tool_approval_manager=self.tool_approval_manager,
-                )
-                
-                # Stream responses
-                response_text = ""
-                async for message in temp_client.send_message(thread_ts, user_message):
-                    # Process different message types
-                    from claude_agent_sdk import AssistantMessage, TextBlock
+                # Stream responses and process every AssistantMessage
+                async for message in self.claude_client.send_message(thread_ts, user_message):
+                    # Always say() for every AssistantMessage with detailed info
                     if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                response_text += block.text + "\n"
-                
-                # Send new message with response instead of updating
-                if response_text.strip():
-                    await say(
-                        response_text.strip(),
-                        thread_ts=thread_ts
-                    )
-                else:
-                    await say(
-                        "I processed your request, but there's no text response.",
-                        thread_ts=thread_ts
-                    )
-                
-                # Clean up temp client
-                await temp_client.disconnect_all()
+                        formatted_message = self._format_assistant_message(message)
+                        await say(formatted_message, thread_ts=thread_ts)
                 
             except Exception as e:
                 error_msg = f"❌ Error: {str(e)}"
@@ -115,86 +199,6 @@ class ButabotApp:
                 print(f"Error handling message: {e}")
                 import traceback
                 traceback.print_exc()
-        
-        @self.app.action("tool_approve")
-        async def handle_tool_approve(ack, body: Dict[str, Any]):
-            """Handle tool approval button click."""
-            await ack()
-            approval_id = body["actions"][0]["value"]
-            
-            # Get approval details before handling response (which may trigger cleanup)
-            approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
-            
-            # Handle the approval response
-            self.tool_approval_manager.handle_approval_response(approval_id, approved=True)
-            
-            # Get message details
-            message = body["message"]
-            message_ts = message.get("ts")
-            channel_id = body["channel"]["id"]
-            
-            # Format informative approval message
-            if approval_data:
-                tool_name = approval_data.get("tool_name", "unknown")
-                tool_input = approval_data.get("tool_input", {})
-                text_content = approval_data.get("text_content", "")
-                
-                approval_text = self.tool_approval_manager.format_approval_message(
-                    tool_name=tool_name,
-                    tool_input=tool_input,
-                    text_content=text_content,
-                    approved=True
-                )
-            else:
-                approval_text = "✅ Tool approved. Executing..."
-            
-            # Update the original approval request message
-            await self.slack_client.chat_update(
-                channel=channel_id,
-                ts=message_ts,
-                text=approval_text,
-                blocks=[]  # Remove buttons
-            )
-        
-        @self.app.action("tool_deny")
-        async def handle_tool_deny(ack, body: Dict[str, Any]):
-            """Handle tool denial button click."""
-            await ack()
-            approval_id = body["actions"][0]["value"]
-            
-            # Get approval details before handling response (which may trigger cleanup)
-            approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
-            
-            # Handle the denial response
-            self.tool_approval_manager.handle_approval_response(approval_id, approved=False)
-            
-            # Get message details
-            message = body["message"]
-            message_ts = message.get("ts")
-            channel_id = body["channel"]["id"]
-            
-            # Format informative denial message
-            if approval_data:
-                tool_name = approval_data.get("tool_name", "unknown")
-                tool_input = approval_data.get("tool_input", {})
-                text_content = approval_data.get("text_content", "")
-                
-                denial_text = self.tool_approval_manager.format_approval_message(
-                    tool_name=tool_name,
-                    tool_input=tool_input,
-                    text_content=text_content,
-                    approved=False
-                )
-            else:
-                denial_text = "❌ Tool denied."
-            
-            # Update the original approval request message
-            await self.slack_client.chat_update(
-                channel=channel_id,
-                ts=message_ts,
-                text=denial_text,
-                blocks=[]  # Remove buttons
-            )
         
         @self.app.event("message")
         async def handle_message(event: Dict[str, Any]):
