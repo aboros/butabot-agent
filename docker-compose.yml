@@ -1,0 +1,23 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: butabot-agent
+    env_file:
+      - .env
+    volumes:
+      # Mount config directory for easy MCP config updates
+      - ./config:/app/config:ro
+      # Mount data directory to persist files created by MCP tools (like filesystem server)
+      - ./data:/app/data:rw
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python.*bot.app"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+

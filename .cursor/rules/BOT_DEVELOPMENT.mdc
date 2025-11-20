@@ -1,0 +1,336 @@
+---
+alwaysApply: true
+---
+
+# Butabot Agent Development Rules
+
+> Best practices and architectural patterns for the Butabot Slack bot using Anthropic Agent SDK.
+
+## Architecture Overview
+
+The bot uses a layered architecture:
+- **Slack Layer** (`bot/app.py`): Handles Slack events and interactions
+- **Claude Layer** (`bot/claude_client.py`): Wraps Agent SDK for thread-aware conversations
+- **Session Layer** (`bot/session_manager.py`): Maps Slack threads to Agent SDK sessions
+- **Approval Layer** (`bot/tool_approval.py`): Manages tool approval workflows
+- **Config Layer** (`bot/mcp_config.py`): Loads MCP server configurations
+
+## Core Principles
+
+### 1. Session Management
+
+**CRITICAL: The SDK provides session IDs, we do NOT generate them.**
+
+- **Never generate UUIDs or custom session IDs** - The Agent SDK provides session IDs in `ResultMessage.session_id`
+- **Extract and store**: Always extract `session_id` from `ResultMessage` and store it via `SessionManager.store_session()`
+- **Use `resume` parameter**: Only when recreating a client for an existing session (e.g., after restart)
+- **Client per thread**: Maintain one `ClaudeSDKClient` instance per Slack thread (keyed by `thread_id`)
+- **SDK maintains sessions**: `ClaudeSDKClient` automatically maintains conversation context within a client instance
+
+```python
+# ✅ CORRECT: Extract session_id from ResultMessage
+async for message in client.receive_response():
+    if isinstance(message, ResultMessage):
+        session_id = message.session_id
+        self.session_manager.store_session(thread_id, session_id)
+    yield message
+
+# ❌ WRONG: Don't generate session IDs
+session_id = f"slack-{thread_id}-{uuid.uuid4()}"  # NO!
+```
+
+### 2. Thread-Based Conversations
+
+- **One thread = One conversation**: Each Slack thread maintains its own conversation context
+- **Thread detection**: Use `event.get("thread_ts") or event.get("ts")` to get thread identifier
+- **Context isolation**: Messages in different threads are completely separate conversations
+- **Thread persistence**: Store session IDs per thread for potential resume after restart
+
+### 3. Agent SDK Usage
+
+**Always use `ClaudeSDKClient` for multi-turn conversations:**
+
+- **Use `ClaudeSDKClient`** (not `query()`) for Slack bots - maintains context across messages
+- **Connect before query**: Always call `await client.connect()` before sending messages
+- **Stream responses**: Use `receive_response()` to get all messages including `ResultMessage`
+- **Extract session_id**: Always check for `ResultMessage` and extract `session_id`
+- **Disconnect properly**: Call `disconnect()` when done with a client
+
+```python
+# ✅ CORRECT: Proper client lifecycle
+client = ClaudeSDKClient(options=options)
+await client.connect()
+await client.query(user_message)
+async for message in client.receive_response():
+    if isinstance(message, ResultMessage):
+        session_id = message.session_id  # Store this!
+    # Process message
+await client.disconnect()
+```
+
+### 4. MCP Server Configuration
+
+- **Load from config file**: Use `load_mcp_config()` to load from JSON file (path via `MCP_CONFIG_PATH` env var)
+- **Config format**: Follow Claude's MCP config format with `mcpServers` key
+- **Support all types**: Handle stdio, HTTP, and SSE server types
+- **Environment variables**: Pass MCP server env vars through config
+
+```python
+# ✅ CORRECT: Load MCP config
+mcp_config_path = load_mcp_config()  # Returns Path or None
+options = ClaudeAgentOptions(
+    mcp_servers=mcp_config_path if mcp_config_path else {}
+)
+```
+
+### 5. Tool Approval Workflow
+
+- **PreToolUse hooks**: Use hooks to intercept tool calls before execution
+- **Async approval**: Tool approval callbacks must be async and wait for user response
+- **Timeout handling**: Always implement timeout (default 5 minutes)
+- **Slack interactions**: Use Slack buttons with `action_id` matching handlers
+- **Cleanup**: Always clean up approval state after decision
+
+```python
+# ✅ CORRECT: Tool approval hook pattern
+async def tool_approval_hook(input_data, tool_use_id, context):
+    result = await approval_callback(thread_id, tool_info, tool_use_id)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": result.get("decision", "deny"),
+            "permissionDecisionReason": result.get("message", "")
+        }
+    }
+```
+
+### 6. Error Handling
+
+- **Always wrap**: Wrap Claude client calls in try/except blocks
+- **User-friendly errors**: Show clear error messages in Slack, log details to console
+- **Graceful degradation**: If tool approval fails, deny by default
+- **Logging**: Use `print()` or proper logging for debugging (Docker logs)
+
+```python
+# ✅ CORRECT: Error handling pattern
+try:
+    async for message in client.send_message(thread_id, user_message):
+        # Process messages
+except Exception as e:
+    await slack_client.chat_update(
+        channel=channel_id,
+        ts=message_ts,
+        text=f"❌ Error: {str(e)}"
+    )
+    print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
+```
+
+### 7. Slack Event Handling
+
+- **Thread detection**: Always check for `thread_ts` first, fall back to `ts`
+- **Bot mention removal**: Remove bot user ID from message text before processing
+- **Thinking indicator**: Show "🤔 Thinking..." message immediately, update with response
+- **Message updates**: Use `chat_update()` to replace thinking message with response
+- **Button actions**: Always `ack()` button interactions immediately
+
+```python
+# ✅ CORRECT: Thread detection
+thread_ts = event.get("thread_ts") or event.get("ts")
+
+# ✅ CORRECT: Remove bot mention
+user_message = event.get("text", "")
+if f"<@{bot_user_id}>" in user_message:
+    user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
+```
+
+### 8. Code Organization
+
+**Module responsibilities:**
+
+- **`bot/app.py`**: Slack Bolt app, event handlers, button handlers
+- **`bot/claude_client.py`**: ClaudeSDKClient wrapper, message streaming, session extraction
+- **`bot/session_manager.py`**: Thread-to-session mapping, session storage
+- **`bot/tool_approval.py`**: Tool approval workflow, Slack interactions
+- **`bot/mcp_config.py`**: MCP config loading and parsing
+
+**Import patterns:**
+
+```python
+# ✅ CORRECT: Import order
+# 1. Standard library
+import asyncio
+import os
+from typing import Any, Dict
+
+# 2. Third-party
+from dotenv import load_dotenv
+from slack_bolt.async_app import AsyncApp
+
+# 3. Agent SDK
+from claude_agent_sdk import ClaudeSDKClient, ResultMessage
+
+# 4. Local modules
+from .claude_client import ClaudeClient
+from .session_manager import SessionManager
+```
+
+### 9. Async/Await Patterns
+
+- **Always async**: All Slack handlers and Claude client methods are async
+- **Await properly**: Always await async calls, don't forget `await`
+- **Stream handling**: Use `async for` to iterate over message streams
+- **Event loops**: Use `asyncio.run()` for main entry point
+
+```python
+# ✅ CORRECT: Async patterns
+async def handle_event(event):
+    client = await self._get_or_create_client(thread_id)
+    await client.query(message)
+    async for msg in client.receive_response():
+        # Process message
+```
+
+### 10. Docker and Deployment
+
+- **Docker Compose V2**: Use `docker compose` (space, not hyphen) - this is the modern Docker CLI plugin
+  - ✅ Use: `docker compose up`, `docker compose down`, `docker compose build`
+  - ❌ Avoid: `docker-compose` (legacy standalone binary)
+- **Claude Code CLI**: Must be installed in Docker image (`npm install -g @anthropic-ai/claude-code`)
+- **Node.js required**: MCP servers need Node.js (install in Dockerfile)
+- **Environment variables**: Use `.env` file, load with `python-dotenv`
+- **Health checks**: Use process checks (not HTTP) for Socket Mode
+- **Volume mounts**: 
+  - Mount `config/` directory for MCP config updates (read-only)
+  - Mount `data/` directory for files created by MCP tools (read-write)
+- **Compose file**: Remove `version:` field (obsolete in Compose V2)
+
+### 11. Testing Considerations
+
+- **In-memory storage**: Session manager uses in-memory dict (lost on restart)
+- **Thread isolation**: Each test thread should use unique `thread_id`
+- **Mock approvals**: Can bypass tool approvals for testing
+- **Error scenarios**: Test timeout, denial, and error cases
+
+### 12. Common Pitfalls to Avoid
+
+**❌ DON'T:**
+- Generate your own session IDs (SDK provides them)
+- Use `query()` for multi-turn conversations (use `ClaudeSDKClient`)
+- Forget to extract `session_id` from `ResultMessage`
+- Create multiple clients for the same thread (reuse client instance)
+- Use `resume` on first message (only for existing sessions)
+- Forget to `await` async calls
+- Ignore `ResultMessage` (contains important metadata)
+
+**✅ DO:**
+- Extract `session_id` from `ResultMessage` and store it
+- Reuse `ClaudeSDKClient` instances per thread
+- Use `resume` only when recreating clients for existing sessions
+- Handle all message types (`AssistantMessage`, `ResultMessage`, `ToolUseBlock`, etc.)
+- Clean up clients properly with `disconnect()`
+- Show user-friendly error messages in Slack
+- Log detailed errors to console/logs
+
+### 13. Message Processing Patterns
+
+**Always process all message types:**
+
+```python
+async for message in client.receive_response():
+    if isinstance(message, AssistantMessage):
+        # Extract text blocks
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                text += block.text
+            elif isinstance(block, ToolUseBlock):
+                # Log tool usage
+                pass
+            elif isinstance(block, ToolResultBlock):
+                # Log tool results
+                pass
+    elif isinstance(message, ResultMessage):
+        # Extract session_id and metadata
+        session_id = message.session_id
+        duration = message.duration_ms
+        cost = message.total_cost_usd
+```
+
+### 14. Environment Variables
+
+**Required:**
+- `SLACK_BOT_TOKEN`: Bot token (xoxb-...)
+- `SLACK_SIGNING_SECRET`: Signing secret
+- `SLACK_APP_TOKEN`: App-level token for Socket Mode (xapp-...)
+- `ANTHROPIC_API_KEY`: Anthropic API key
+
+**Optional:**
+- `MCP_CONFIG_PATH`: Path to MCP config JSON (default: `config/mcp.config.json`)
+- `PORT`: HTTP server port (default: `3000`)
+
+### 15. Performance Considerations
+
+- **Client reuse**: Reuse `ClaudeSDKClient` instances (don't create new ones per message)
+- **Connection pooling**: SDK handles connection management internally
+- **Memory**: In-memory session storage (consider persistence for production)
+- **Timeout**: Tool approvals timeout after 5 minutes (configurable)
+
+## Code Examples
+
+### Creating a Claude Client
+
+```python
+from bot.claude_client import ClaudeClient
+from bot.session_manager import SessionManager
+
+session_manager = SessionManager()
+claude_client = ClaudeClient(
+    session_manager=session_manager,
+    tool_approval_callback=approval_callback  # Optional
+)
+```
+
+### Sending a Message
+
+```python
+async for message in claude_client.send_message(thread_id, user_message):
+    if isinstance(message, AssistantMessage):
+        # Process assistant response
+        pass
+    elif isinstance(message, ResultMessage):
+        # Extract session_id for storage
+        session_id = message.session_id
+```
+
+### Tool Approval Callback
+
+```python
+async def approval_callback(thread_id, tool_info, tool_use_id):
+    # Request approval from user
+    approved = await request_user_approval(...)
+    return {
+        "decision": "allow" if approved else "deny",
+        "message": "User approved" if approved else "User denied"
+    }
+```
+
+### Docker Compose Commands
+
+```bash
+# ✅ CORRECT: Use Docker Compose V2 (space)
+docker compose build
+docker compose up -d
+docker compose down
+docker compose logs -f
+docker compose ps
+
+# ❌ WRONG: Don't use legacy docker-compose (hyphen)
+docker-compose build  # Avoid this
+```
+
+## References
+
+- Agent SDK Documentation: See `AGENT_SDK.mdc` for complete SDK reference
+- Slack Bolt Python: https://slack.dev/bolt-python/
+- MCP Protocol: https://modelcontextprotocol.io/
