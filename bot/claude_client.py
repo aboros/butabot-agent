@@ -34,6 +34,7 @@ class ClaudeClient:
         self,
         session_manager: SessionManager,
         feedback_callback: Optional[Callable[[str, str], Any]] = None,
+        approval_manager: Optional[Any] = None,
     ):
         """
         Initialize Claude client.
@@ -43,11 +44,14 @@ class ClaudeClient:
             feedback_callback: Optional callback for sending feedback messages to Slack.
                              Called with (thread_id, feedback_message) to send feedback.
                              Can be a callable or a dict mapping thread_id -> callback.
+            approval_manager: Optional ToolApprovalManager instance for tool approval
         """
         self.session_manager = session_manager
         self.feedback_callback = feedback_callback
+        self.approval_manager = approval_manager
         self._clients: Dict[str, ClaudeSDKClient] = {}  # thread_id -> client
         self._feedback_callbacks: Dict[str, Callable[[str, str], Any]] = {}  # thread_id -> callback
+        self._channel_ids: Dict[str, str] = {}  # thread_id -> channel_id
         
         # Load MCP config
         mcp_config_path = load_mcp_config()
@@ -76,6 +80,16 @@ class ClaudeClient:
             callback: Callback function that takes (thread_id, feedback_message)
         """
         self._feedback_callbacks[thread_id] = callback
+    
+    def set_channel_id(self, thread_id: str, channel_id: str):
+        """
+        Set channel ID for a specific thread (needed for approval requests).
+        
+        Args:
+            thread_id: Slack thread ID
+            channel_id: Slack channel ID
+        """
+        self._channel_ids[thread_id] = channel_id
     
     async def _get_or_create_client(self, thread_id: str) -> ClaudeSDKClient:
         """
@@ -125,33 +139,47 @@ class ClaudeClient:
             tool_use_id: Optional[str],
             context: HookContext
         ) -> Dict[str, Any]:
-            """Hook that sends feedback before tool execution."""
-            # Get callback dynamically (check per-thread first, then global)
-            callback = self._feedback_callbacks.get(thread_id) or self.feedback_callback or feedback_callback
-            if not callback:
-                return {}
-            
+            """Hook that requests approval before tool execution."""
             tool_name = input_data.get("tool_name", "unknown")
             tool_input = input_data.get("tool_input", {})
             
-            # Format tool input for display
-            tool_input_str = self._format_tool_input(tool_input)
+            # Request approval if approval_manager is available
+            decision = "allow"  # Default to allow if no approval manager
+            decision_reason = ""
             
-            # Create feedback message
-            feedback = f"⚡ *PreToolUse:* `{tool_name}`\n"
-            feedback += f"```\n{tool_input_str}\n```"
+            if self.approval_manager:
+                channel_id = self._channel_ids.get(thread_id)
+                if channel_id:
+                    try:
+                        # Request approval (this will post the approval dialog)
+                        approval_id, approved, message_ts = await self.approval_manager.request_approval(
+                            thread_id=thread_id,
+                            channel_id=channel_id,
+                            tool_name=tool_name,
+                            tool_input=tool_input,
+                            tool_use_id=tool_use_id or "",
+                        )
+                        
+                        decision = "allow" if approved else "deny"
+                        decision_reason = f"Tool {tool_name} {'approved' if approved else 'denied'}"
+                        
+                        # Store mapping for later result updates (only if approved)
+                        if approved and message_ts:
+                            self.approval_manager.store_tool_use_mapping(tool_use_id or "", approval_id)
+                        elif not approved:
+                            # Clean up approval data if denied
+                            self.approval_manager._cleanup_approval(approval_id)
+                    except Exception as e:
+                        print(f"Error requesting tool approval: {e}")
+                        # On error, deny by default for safety
+                        decision = "deny"
+                        decision_reason = f"Error requesting approval: {str(e)}"
             
-            # Send feedback
-            try:
-                await callback(thread_id, feedback)
-            except Exception as e:
-                print(f"Error sending PreToolUse feedback: {e}")
-            
-            # Always allow tool execution
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": decision_reason,
                 }
             }
         

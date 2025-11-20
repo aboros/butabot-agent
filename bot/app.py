@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
+from .tool_approval import ToolApprovalManager
 
 
 def log(message: str, level: str = "INFO"):
@@ -47,11 +48,13 @@ class ButabotApp:
         # Initialize components
         self.session_manager = SessionManager()
         self.slack_client = AsyncWebClient(token=os.getenv("SLACK_BOT_TOKEN"))
+        self.tool_approval_manager = ToolApprovalManager(self.slack_client)
         
         # Initialize Claude client (feedback callback will be set per message)
         self.claude_client = ClaudeClient(
             session_manager=self.session_manager,
             feedback_callback=None,  # Will be set per message
+            approval_manager=self.tool_approval_manager,
         )
         
         # Register event handlers
@@ -247,8 +250,9 @@ class ButabotApp:
                 # Create feedback callback for this thread
                 feedback_callback = self._create_feedback_callback(thread_ts, say)
                 
-                # Set feedback callback for this thread on the main client
+                # Set feedback callback and channel_id for this thread on the main client
                 self.claude_client.set_feedback_callback(thread_ts, feedback_callback)
+                self.claude_client.set_channel_id(thread_ts, channel_id)
                 
                 # Send "thinking" message and store its timestamp for updates
                 thinking_response = await say(
@@ -387,6 +391,86 @@ class ButabotApp:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 sys.stderr.flush()
+        
+        @self.app.action("tool_approve")
+        async def handle_tool_approve(ack, body: Dict[str, Any]):
+            """Handle tool approval button click."""
+            await ack()
+            approval_id = body["actions"][0]["value"]
+            
+            # Get approval details before handling response (which may trigger cleanup)
+            approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
+            
+            # Handle the approval response
+            self.tool_approval_manager.handle_approval_response(approval_id, approved=True)
+            
+            # Get message details
+            message = body["message"]
+            message_ts = message.get("ts")
+            channel_id = body["channel"]["id"]
+            
+            # Format informative approval message
+            if approval_data:
+                tool_name = approval_data.get("tool_name", "unknown")
+                tool_input = approval_data.get("tool_input", {})
+                
+                approval_text = self.tool_approval_manager.format_approval_message(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    approved=True
+                )
+            else:
+                approval_text = "✅ Tool approved. Executing..."
+            
+            # Update the original approval request message
+            await self.slack_client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                blocks=[{
+                    "type": "markdown",
+                    "text": approval_text
+                }]
+            )
+        
+        @self.app.action("tool_deny")
+        async def handle_tool_deny(ack, body: Dict[str, Any]):
+            """Handle tool denial button click."""
+            await ack()
+            approval_id = body["actions"][0]["value"]
+            
+            # Get approval details before handling response (which may trigger cleanup)
+            approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
+            
+            # Handle the denial response
+            self.tool_approval_manager.handle_approval_response(approval_id, approved=False)
+            
+            # Get message details
+            message = body["message"]
+            message_ts = message.get("ts")
+            channel_id = body["channel"]["id"]
+            
+            # Format informative denial message
+            if approval_data:
+                tool_name = approval_data.get("tool_name", "unknown")
+                tool_input = approval_data.get("tool_input", {})
+                
+                denial_text = self.tool_approval_manager.format_approval_message(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    approved=False
+                )
+            else:
+                denial_text = "❌ Tool denied."
+            
+            # Update the original approval request message
+            await self.slack_client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                blocks=[{
+                    "type": "markdown",
+                    "text": denial_text
+                }]
+            )
         
         @self.app.event("message")
         async def handle_message(event: Dict[str, Any]):
