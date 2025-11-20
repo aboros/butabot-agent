@@ -79,7 +79,9 @@ class ButabotApp:
                         "type": "markdown",
                         "text": feedback_message
                     }],
-                    thread_ts=thread_ts
+                    thread_ts=thread_ts,
+                    unfurl_links=False,
+                    unfurl_media=False
                 )
             except Exception as e:
                 print(f"Error sending feedback message: {e}")
@@ -241,7 +243,9 @@ class ButabotApp:
                             "type": "markdown",
                             "text": "Hello! How can I help you?"
                         }],
-                        thread_ts=thread_ts
+                        thread_ts=thread_ts,
+                        unfurl_links=False,
+                        unfurl_media=False
                     )
                     return
                 
@@ -260,7 +264,9 @@ class ButabotApp:
                         "type": "markdown",
                         "text": "🤔 Thinking..."
                     }],
-                    thread_ts=thread_ts
+                    thread_ts=thread_ts,
+                    unfurl_links=False,
+                    unfurl_media=False
                 )
                 thinking_ts = thinking_response.get("ts") if thinking_response else None
                 log(f"Sent thinking message, ts={thinking_ts}")
@@ -330,13 +336,20 @@ class ButabotApp:
                                         channel=channel_id,
                                         ts=thinking_ts,
                                         blocks=formatted_blocks,
-                                        thread_ts=thread_ts
+                                        thread_ts=thread_ts,
+                                        unfurl_links=False,
+                                        unfurl_media=False
                                     )
                                     response_sent = True
                                 else:
                                     # Send as new message
                                     log("Sending new message")
-                                    await say(blocks=formatted_blocks, thread_ts=thread_ts)
+                                    await say(
+                                        blocks=formatted_blocks,
+                                        thread_ts=thread_ts,
+                                        unfurl_links=False,
+                                        unfurl_media=False
+                                    )
                                     response_sent = True
                         
                         log(f"App finished iterating over send_message(). Total messages: {message_count}")
@@ -361,7 +374,9 @@ class ButabotApp:
                                 "type": "markdown",
                                 "text": "✅ Processing complete. (No text response, but tools may have been executed.)"
                             }],
-                            thread_ts=thread_ts
+                            thread_ts=thread_ts,
+                            unfurl_links=False,
+                            unfurl_media=False
                         )
                     
                 except Exception as e:
@@ -377,13 +392,25 @@ class ButabotApp:
                                 channel=channel_id,
                                 ts=thinking_ts,
                                 blocks=error_blocks,
-                                thread_ts=thread_ts
+                                thread_ts=thread_ts,
+                                unfurl_links=False,
+                                unfurl_media=False
                             )
                         except Exception:
                             # Fallback: send as new message
-                            await say(blocks=error_blocks, thread_ts=thread_ts)
+                            await say(
+                                blocks=error_blocks,
+                                thread_ts=thread_ts,
+                                unfurl_links=False,
+                                unfurl_media=False
+                            )
                     else:
-                        await say(blocks=error_blocks, thread_ts=thread_ts)
+                        await say(
+                            blocks=error_blocks,
+                            thread_ts=thread_ts,
+                            unfurl_links=False,
+                            unfurl_media=False
+                        )
                     
                     # Log error with flush to ensure it appears in Docker logs
                     log(f"Error handling message: {e}", level="ERROR")
@@ -419,22 +446,39 @@ class ButabotApp:
                 tool_name = approval_data.get("tool_name", "unknown")
                 tool_input = approval_data.get("tool_input", {})
                 
-                approval_text = self.tool_approval_manager.format_approval_message(
+                approval_blocks = self.tool_approval_manager.format_approval_message(
                     tool_name=tool_name,
                     tool_input=tool_input,
                     approved=True
                 )
             else:
-                approval_text = "✅ Tool approved. Executing..."
+                approval_blocks = [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "✅ Tool approved. Executing..."
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "_Executing tool..._"
+                            }
+                        ]
+                    }
+                ]
             
             # Update the original approval request message
             await self.slack_client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
-                blocks=[{
-                    "type": "markdown",
-                    "text": approval_text
-                }]
+                text=f"Tool approved: {approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'}",
+                blocks=approval_blocks,
+                unfurl_links=False,
+                unfurl_media=False
             )
         
         @self.app.action("tool_deny")
@@ -459,22 +503,39 @@ class ButabotApp:
                 tool_name = approval_data.get("tool_name", "unknown")
                 tool_input = approval_data.get("tool_input", {})
                 
-                denial_text = self.tool_approval_manager.format_approval_message(
+                denial_blocks = self.tool_approval_manager.format_approval_message(
                     tool_name=tool_name,
                     tool_input=tool_input,
                     approved=False
                 )
             else:
-                denial_text = "❌ Tool denied."
+                denial_blocks = [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "❌ Tool denied."
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "_Tool execution cancelled._"
+                            }
+                        ]
+                    }
+                ]
             
             # Update the original approval request message
             await self.slack_client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
-                blocks=[{
-                    "type": "markdown",
-                    "text": denial_text
-                }]
+                text=f"Tool denied: {approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'}",
+                blocks=denial_blocks,
+                unfurl_links=False,
+                unfurl_media=False
             )
         
         @self.app.event("message")

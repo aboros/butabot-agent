@@ -9,11 +9,17 @@ alwaysApply: true
 ## Architecture Overview
 
 The bot uses a layered architecture:
-- **Slack Layer** (`bot/app.py`): Handles Slack events and interactions
-- **Claude Layer** (`bot/claude_client.py`): Wraps Agent SDK for thread-aware conversations
-- **Session Layer** (`bot/session_manager.py`): Maps Slack threads to Agent SDK sessions
-- **Approval Layer** (`bot/tool_approval.py`): Manages tool approval workflows
-- **Config Layer** (`bot/mcp_config.py`): Loads MCP server configurations
+- **Slack Layer** (`bot/app.py`): Handles Slack events (`app_mention`), button interactions (`tool_approve`, `tool_deny`), message formatting, API error detection
+- **Claude Layer** (`bot/claude_client.py`): Wraps Agent SDK for thread-aware conversations, manages client lifecycle, creates hooks for tool approval and feedback
+- **Session Layer** (`bot/session_manager.py`): Maps Slack threads to Agent SDK sessions (in-memory storage)
+- **Approval Layer** (`bot/tool_approval.py`): Manages tool approval workflows via `ToolApprovalManager` class
+
+**Key Design Decisions:**
+- **Security-first**: Built-in filesystem and development tools are disabled by default (`disallowed_tools`)
+- **Thread-based**: Each Slack thread maintains its own conversation session
+- **Tool approval**: All tool usage requires explicit user approval via Slack buttons
+- **Feedback system**: PostToolUse hooks send feedback messages after tool execution
+- **Error handling**: API errors are detected and formatted as user-friendly Slack messages
 
 ## Core Principles
 
@@ -51,55 +57,173 @@ session_id = f"slack-{thread_id}-{uuid.uuid4()}"  # NO!
 **Always use `ClaudeSDKClient` for multi-turn conversations:**
 
 - **Use `ClaudeSDKClient`** (not `query()`) for Slack bots - maintains context across messages
+- **Client wrapper**: Use `ClaudeClient` wrapper class that manages clients per thread
 - **Connect before query**: Always call `await client.connect()` before sending messages
 - **Stream responses**: Use `receive_response()` to get all messages including `ResultMessage`
 - **Extract session_id**: Always check for `ResultMessage` and extract `session_id`
-- **Disconnect properly**: Call `disconnect()` when done with a client
+- **Client reuse**: Reuse client instances per thread (stored in `_clients` dict)
+- **Resume sessions**: Use `resume` parameter only when recreating client for existing session
+- **Disconnect properly**: Call `disconnect()` when done with a client (or use `disconnect_session()`)
 
 ```python
-# ✅ CORRECT: Proper client lifecycle
-client = ClaudeSDKClient(options=options)
-await client.connect()
-await client.query(user_message)
-async for message in client.receive_response():
-    if isinstance(message, ResultMessage):
-        session_id = message.session_id  # Store this!
-    # Process message
-await client.disconnect()
+# ✅ CORRECT: Proper client lifecycle (via ClaudeClient wrapper)
+async def _get_or_create_client(self, thread_id: str) -> ClaudeSDKClient:
+    if thread_id not in self._clients:
+        # Get stored session_id if exists
+        stored_session_id = self.session_manager.get_session(thread_id)
+        
+        # Create options with resume if we have a stored session
+        options = ClaudeAgentOptions(
+            mcp_servers=self.base_options.mcp_servers,
+            resume=stored_session_id if stored_session_id else None,
+            disallowed_tools=self.base_options.disallowed_tools,
+        )
+        
+        # Add hooks for tool approval and feedback
+        if self.approval_manager:
+            hooks = self._create_feedback_hooks(thread_id)
+            if hooks:
+                options.hooks = hooks
+        
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+        self._clients[thread_id] = client
+    
+    return self._clients[thread_id]
 ```
 
 ### 4. MCP Server Configuration
 
-- **Load from config file**: Use `load_mcp_config()` to load from JSON file (path via `MCP_CONFIG_PATH` env var)
+**CRITICAL: The SDK automatically loads `.mcp.json` from the project root. No custom parsing needed.**
+
+- **Standard location**: Create `.mcp.json` in the project root (not in `config/` subdirectory)
+- **SDK handles parsing**: Pass the path to `.mcp.json` and let the SDK handle everything
+- **No custom code needed**: The SDK automatically discovers and parses `.mcp.json` - no `mcp_config.py` module required
 - **Config format**: Follow Claude's MCP config format with `mcpServers` key
-- **Support all types**: Handle stdio, HTTP, and SSE server types
-- **Environment variables**: Pass MCP server env vars through config
+- **Support all types**: SDK supports stdio, HTTP, and SSE server types
+- **Docker mounting**: Mount `.mcp.json` to `/app/.mcp.json` in Docker container
 
 ```python
-# ✅ CORRECT: Load MCP config
-mcp_config_path = load_mcp_config()  # Returns Path or None
+# ✅ CORRECT: Let SDK handle .mcp.json automatically
+from pathlib import Path
+
+# SDK automatically loads and parses .mcp.json
+mcp_config_path = Path("/app/.mcp.json")
 options = ClaudeAgentOptions(
-    mcp_servers=mcp_config_path if mcp_config_path else {}
+    mcp_servers=mcp_config_path if mcp_config_path.exists() else {}
 )
 ```
 
+**Drupal MCP Server Configuration:**
+
+For Drupal MCP servers, use STDIO transport with Docker binary:
+
+- **Transport type**: Use STDIO (not HTTP) - Drupal MCP uses a Docker binary
+- **Docker requirements**: 
+  - Docker socket must be mounted (`/var/run/docker.sock`)
+  - Docker CLI must be installed in the container
+- **Network mode**: Use `--network=host` in Docker args for local DDEV sites
+- **Authentication**: Use username/password (basic auth) - configure in Drupal MCP module settings
+- **Local development**: Use HTTP (not HTTPS) for DDEV sites to avoid SSL certificate issues
+- **Drupal permissions**: User must have "Use MCP server" permission in Drupal
+
+```json
+// ✅ CORRECT: .mcp.json configuration for Drupal MCP
+{
+  "mcpServers": {
+    "drupal": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "DRUPAL_AUTH_USER",
+        "-e",
+        "DRUPAL_AUTH_PASSWORD",
+        "--network=host",
+        "ghcr.io/omedia/mcp-server-drupal:latest",
+        "--drupal-url=http://mysite.ddev.site"
+      ],
+      "env": {
+        "DRUPAL_AUTH_USER": "mcp_user",
+        "DRUPAL_AUTH_PASSWORD": "secure_password"
+      }
+    }
+  }
+}
+```
+
+**Docker Compose Setup:**
+
+```yaml
+volumes:
+  # Mount .mcp.json from project root
+  - ./.mcp.json:/app/.mcp.json:ro
+  # Mount Docker socket for STDIO MCP servers
+  - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+**Dockerfile Requirements:**
+
+```dockerfile
+# Install Docker CLI for STDIO MCP servers
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli
+```
+
+**Troubleshooting MCP Servers:**
+
+- **Check connection status**: Look for `status=connected` vs `status=failed` in SystemMessage logs
+- **Authentication errors**: Verify username/password in `.mcp.json` match Drupal user credentials
+- **Permission errors**: Ensure Drupal user has "Use MCP server" permission
+- **SSL errors**: For local development, use HTTP instead of HTTPS
+- **No tools listed**: Check that MCP plugins are enabled in Drupal (`mcp_extra`, `mcp_dev_tools`)
+- **Docker errors**: Verify Docker socket is mounted and Docker CLI is installed
+
 ### 5. Tool Approval Workflow
 
-- **PreToolUse hooks**: Use hooks to intercept tool calls before execution
-- **Async approval**: Tool approval callbacks must be async and wait for user response
-- **Timeout handling**: Always implement timeout (default 5 minutes)
-- **Slack interactions**: Use Slack buttons with `action_id` matching handlers
-- **Cleanup**: Always clean up approval state after decision
+- **ToolApprovalManager**: Use `ToolApprovalManager` class for managing approval workflows
+- **PreToolUse hooks**: Hooks intercept tool calls before execution and request approval
+- **PostToolUse hooks**: Hooks send feedback after tool execution completes
+- **Async approval**: Tool approval requests post Slack messages and wait for user response
+- **Timeout handling**: Approval requests timeout after 5 minutes (default), denying by default
+- **Slack interactions**: Use Slack buttons with `action_id` matching handlers (`tool_approve`, `tool_deny`)
+- **Message updates**: Approval messages are updated with execution results
+- **Cleanup**: Always clean up approval state after decision or timeout
 
 ```python
-# ✅ CORRECT: Tool approval hook pattern
-async def tool_approval_hook(input_data, tool_use_id, context):
-    result = await approval_callback(thread_id, tool_info, tool_use_id)
+# ✅ CORRECT: Tool approval implementation pattern
+# In claude_client.py, hooks are created per-thread:
+async def pre_tool_use_hook(input_data, tool_use_id, context):
+    tool_name = input_data.get("tool_name", "unknown")
+    tool_input = input_data.get("tool_input", {})
+    
+    # Request approval via ToolApprovalManager
+    if self.approval_manager:
+        approval_id, approved, message_ts = await self.approval_manager.request_approval(
+            thread_id=thread_id,
+            channel_id=channel_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_use_id=tool_use_id or "",
+        )
+        decision = "allow" if approved else "deny"
+    
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": result.get("decision", "deny"),
-            "permissionDecisionReason": result.get("message", "")
+            "permissionDecision": decision,
+            "permissionDecisionReason": f"Tool {tool_name} {'approved' if approved else 'denied'}"
         }
     }
 ```
@@ -108,23 +232,35 @@ async def tool_approval_hook(input_data, tool_use_id, context):
 
 - **Always wrap**: Wrap Claude client calls in try/except blocks
 - **User-friendly errors**: Show clear error messages in Slack, log details to console
+- **API error detection**: Detect common API errors (529 overloaded, rate limits, etc.) and show user-friendly messages
 - **Graceful degradation**: If tool approval fails, deny by default
-- **Logging**: Use `print()` or proper logging for debugging (Docker logs)
+- **Logging**: Use `log()` function that prints to stderr with flush for Docker logs
+- **Error formatting**: Format errors as Slack Block Kit markdown blocks
 
 ```python
 # ✅ CORRECT: Error handling pattern
+def log(message: str, level: str = "INFO"):
+    """Log message with flush to ensure it appears in Docker logs."""
+    print(f"[{level}] {message}", file=sys.stderr, flush=True)
+
 try:
     async for message in client.send_message(thread_id, user_message):
         # Process messages
 except Exception as e:
+    error_blocks = [{
+        "type": "markdown",
+        "text": f"❌ *Error:* {str(e)}"
+    }]
     await slack_client.chat_update(
         channel=channel_id,
         ts=message_ts,
-        text=f"❌ Error: {str(e)}"
+        blocks=error_blocks,
+        thread_ts=thread_ts
     )
-    print(f"Error: {e}")
+    log(f"Error handling message: {e}", level="ERROR")
     import traceback
-    traceback.print_exc()
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
 ```
 
 ### 7. Slack Event Handling
@@ -134,6 +270,9 @@ except Exception as e:
 - **Thinking indicator**: Show "🤔 Thinking..." message immediately, update with response
 - **Message updates**: Use `chat_update()` to replace thinking message with response
 - **Button actions**: Always `ack()` button interactions immediately
+- **Message formatting**: Use Slack Block Kit format with markdown blocks
+- **Tool use handling**: Skip sending AssistantMessages that contain ToolUseBlocks (handled by hooks)
+- **API error detection**: Detect and format API errors in text blocks before sending to Slack
 
 ```python
 # ✅ CORRECT: Thread detection
@@ -143,17 +282,33 @@ thread_ts = event.get("thread_ts") or event.get("ts")
 user_message = event.get("text", "")
 if f"<@{bot_user_id}>" in user_message:
     user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
+
+# ✅ CORRECT: Thinking indicator and update
+thinking_response = await say(
+    blocks=[{"type": "markdown", "text": "🤔 Thinking..."}],
+    thread_ts=thread_ts
+)
+thinking_ts = thinking_response.get("ts")
+
+# Later, update with actual response
+await slack_client.chat_update(
+    channel=channel_id,
+    ts=thinking_ts,
+    blocks=formatted_blocks,
+    thread_ts=thread_ts
+)
 ```
 
 ### 8. Code Organization
 
 **Module responsibilities:**
 
-- **`bot/app.py`**: Slack Bolt app, event handlers, button handlers
-- **`bot/claude_client.py`**: ClaudeSDKClient wrapper, message streaming, session extraction
-- **`bot/session_manager.py`**: Thread-to-session mapping, session storage
-- **`bot/tool_approval.py`**: Tool approval workflow, Slack interactions
-- **`bot/mcp_config.py`**: MCP config loading and parsing
+- **`bot/app.py`**: Slack Bolt app, event handlers (`app_mention`), button handlers (`tool_approve`, `tool_deny`), message formatting, API error detection
+- **`bot/claude_client.py`**: ClaudeSDKClient wrapper, message streaming, session extraction, hook creation (PreToolUse, PostToolUse), feedback callbacks, MCP config path handling
+- **`bot/session_manager.py`**: Thread-to-session mapping, session storage (in-memory dict)
+- **`bot/tool_approval.py`**: Tool approval workflow (`ToolApprovalManager`), Slack interactions, approval request/response handling
+- **`main.py`**: Entry point that calls `bot.app.main()`
+- **`.mcp.json`**: MCP server configuration file in project root (SDK automatically loads this)
 
 **Import patterns:**
 
@@ -162,18 +317,33 @@ if f"<@{bot_user_id}>" in user_message:
 # 1. Standard library
 import asyncio
 import os
+import sys
 from typing import Any, Dict
 
 # 2. Third-party
 from dotenv import load_dotenv
 from slack_bolt.async_app import AsyncApp
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_sdk.web.async_client import AsyncWebClient
 
 # 3. Agent SDK
-from claude_agent_sdk import ClaudeSDKClient, ResultMessage
+from claude_agent_sdk import (
+    ClaudeSDKClient,
+    ClaudeAgentOptions,
+    AssistantMessage,
+    TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    ResultMessage,
+    SystemMessage,
+    HookMatcher,
+    HookContext,
+)
 
 # 4. Local modules
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
+from .tool_approval import ToolApprovalManager
 ```
 
 ### 9. Async/Await Patterns
@@ -198,20 +368,32 @@ async def handle_event(event):
   - ✅ Use: `docker compose up`, `docker compose down`, `docker compose build`
   - ❌ Avoid: `docker-compose` (legacy standalone binary)
 - **Claude Code CLI**: Must be installed in Docker image (`npm install -g @anthropic-ai/claude-code`)
-- **Node.js required**: MCP servers need Node.js (install in Dockerfile)
+- **Node.js required**: MCP servers need Node.js 20+ (install in Dockerfile)
+- **Python version**: Use Python 3.11 (specified in Dockerfile)
 - **Environment variables**: Use `.env` file, load with `python-dotenv`
-- **Health checks**: Use process checks (not HTTP) for Socket Mode
+- **Health checks**: Use process checks (`pgrep -f "python.*bot.app"`) for Socket Mode
 - **Volume mounts**: 
-  - Mount `config/` directory for MCP config updates (read-only)
-  - Mount `data/` directory for files created by MCP tools (read-write)
-- **Compose file**: Remove `version:` field (obsolete in Compose V2)
+  - Mount `.mcp.json` from project root to `/app/.mcp.json` (read-only: `:ro`)
+  - Mount `data/` directory for files created by MCP tools (read-write: `:rw`)
+  - Mount `bot/` and `main.py` for development (read-only: `:ro`)
+  - Mount Docker socket `/var/run/docker.sock` for STDIO MCP servers (read-only: `:ro`)
+- **Docker CLI**: Must be installed in Dockerfile for STDIO MCP servers that use Docker
+- **Compose file**: No `version:` field (obsolete in Compose V2)
+- **Entry point**: Dockerfile runs `python -m bot.app` (not `main.py`)
+- **Logging**: Set `PYTHONUNBUFFERED=1` for immediate log output in Docker
+- **Restart policy**: Use `restart: unless-stopped` in docker-compose.yml
 
 ### 11. Testing Considerations
 
 - **In-memory storage**: Session manager uses in-memory dict (lost on restart)
 - **Thread isolation**: Each test thread should use unique `thread_id`
-- **Mock approvals**: Can bypass tool approvals for testing
+- **Mock approvals**: Can bypass tool approvals by not passing `approval_manager` to `ClaudeClient`
 - **Error scenarios**: Test timeout, denial, and error cases
+- **Message types**: Test handling of all message types (`SystemMessage`, `AssistantMessage`, `ResultMessage`)
+- **Tool use**: Test that messages with `ToolUseBlock` are not sent to Slack
+- **Session persistence**: Test that `session_id` is extracted and stored correctly
+- **Client reuse**: Test that clients are reused per thread
+- **Feedback callbacks**: Test per-thread feedback callback functionality
 
 ### 12. Common Pitfalls to Avoid
 
@@ -219,19 +401,31 @@ async def handle_event(event):
 - Generate your own session IDs (SDK provides them)
 - Use `query()` for multi-turn conversations (use `ClaudeSDKClient`)
 - Forget to extract `session_id` from `ResultMessage`
-- Create multiple clients for the same thread (reuse client instance)
+- Create multiple clients for the same thread (reuse client instance via `_get_or_create_client()`)
 - Use `resume` on first message (only for existing sessions)
 - Forget to `await` async calls
 - Ignore `ResultMessage` (contains important metadata)
+- Send AssistantMessages with ToolUseBlocks to Slack (hooks handle them)
+- Forget to set `channel_id` before requesting tool approval
+- Forget to set `feedback_callback` if you want PostToolUse feedback
+- Create custom MCP config parsing code (SDK handles `.mcp.json` automatically)
+- Use HTTPS for local DDEV sites (use HTTP to avoid SSL certificate issues)
 
 **✅ DO:**
-- Extract `session_id` from `ResultMessage` and store it
-- Reuse `ClaudeSDKClient` instances per thread
+- Extract `session_id` from `ResultMessage` and store it via `SessionManager.store_session()`
+- Reuse `ClaudeSDKClient` instances per thread (managed by `ClaudeClient` wrapper)
 - Use `resume` only when recreating clients for existing sessions
-- Handle all message types (`AssistantMessage`, `ResultMessage`, `ToolUseBlock`, etc.)
-- Clean up clients properly with `disconnect()`
-- Show user-friendly error messages in Slack
-- Log detailed errors to console/logs
+- Handle all message types (`AssistantMessage`, `ResultMessage`, `SystemMessage`, `ToolUseBlock`, etc.)
+- Skip sending AssistantMessages that contain ToolUseBlocks (hooks handle approval)
+- Set `feedback_callback` and `channel_id` per thread before sending messages
+- Clean up clients properly with `disconnect_session()` or `disconnect_all()`
+- Show user-friendly error messages in Slack (use `_detect_api_error()`)
+- Log detailed errors to console/logs using `log()` function with flush
+- Use Slack Block Kit format for all messages (markdown blocks)
+- Use `.mcp.json` in project root and let SDK handle parsing automatically
+- Mount Docker socket for STDIO MCP servers that use Docker binaries
+- Use HTTP (not HTTPS) for local DDEV sites to avoid SSL certificate issues
+- Verify Drupal user has "Use MCP server" permission when using Drupal MCP
 
 ### 13. Message Processing Patterns
 
@@ -239,22 +433,43 @@ async def handle_event(event):
 
 ```python
 async for message in client.receive_response():
+    # Handle SystemMessage (status updates, errors, etc.)
+    if isinstance(message, SystemMessage):
+        subtype = getattr(message, 'subtype', 'unknown')
+        data = getattr(message, 'data', {})
+        # Log or handle system messages
+        continue
+    
+    # Handle ResultMessage (contains session_id and metadata)
+    if isinstance(message, ResultMessage):
+        session_id = message.session_id  # Extract and store!
+        duration = message.duration_ms
+        cost = message.total_cost_usd
+        is_error = message.is_error
+        num_turns = message.num_turns
+        # Store session_id for potential resume
+        self.session_manager.store_session(thread_id, session_id)
+        continue
+    
+    # Handle AssistantMessage (text responses, tool use, etc.)
     if isinstance(message, AssistantMessage):
+        # Check for ToolUseBlocks (handled by hooks, don't send to Slack)
+        has_tool_use = any(
+            isinstance(block, ToolUseBlock) 
+            for block in message.content
+        )
+        if has_tool_use:
+            continue  # Skip sending, hooks handle it
+        
         # Extract text blocks
         for block in message.content:
             if isinstance(block, TextBlock):
-                text += block.text
-            elif isinstance(block, ToolUseBlock):
-                # Log tool usage
-                pass
+                # Check for API errors and format accordingly
+                is_error, formatted_text = self._detect_api_error(block.text)
+                # Format and send to Slack
             elif isinstance(block, ToolResultBlock):
-                # Log tool results
+                # Tool results are handled by PostToolUse hooks
                 pass
-    elif isinstance(message, ResultMessage):
-        # Extract session_id and metadata
-        session_id = message.session_id
-        duration = message.duration_ms
-        cost = message.total_cost_usd
 ```
 
 ### 14. Environment Variables
@@ -266,15 +481,53 @@ async for message in client.receive_response():
 - `ANTHROPIC_API_KEY`: Anthropic API key
 
 **Optional:**
-- `MCP_CONFIG_PATH`: Path to MCP config JSON (default: `config/mcp.config.json`)
-- `PORT`: HTTP server port (default: `3000`)
+- `PORT`: HTTP server port (default: `3000`, not used in Socket Mode)
+
+**Note**: MCP configuration is in `.mcp.json` at project root. No environment variable needed - SDK auto-discovers it.
+
+**Note**: Socket Mode is the primary mode (requires `SLACK_APP_TOKEN`). HTTP mode is not yet implemented.
 
 ### 15. Performance Considerations
 
-- **Client reuse**: Reuse `ClaudeSDKClient` instances (don't create new ones per message)
+- **Client reuse**: Reuse `ClaudeSDKClient` instances per thread (don't create new ones per message)
+- **Client storage**: Store clients in `_clients` dict keyed by `thread_id`
 - **Connection pooling**: SDK handles connection management internally
 - **Memory**: In-memory session storage (consider persistence for production)
-- **Timeout**: Tool approvals timeout after 5 minutes (configurable)
+- **Timeout**: Tool approvals timeout after 5 minutes (configurable via `approval_timeout`)
+- **Feedback callbacks**: Per-thread feedback callbacks stored in `_feedback_callbacks` dict
+- **Channel IDs**: Per-thread channel IDs stored in `_channel_ids` dict for approval requests
+
+### 16. Security and Tool Restrictions
+
+**Security-First Configuration:**
+
+- **Disabled tools**: Built-in filesystem and development tools are disabled by default
+- **Disallowed tools list**: Configured in `ClaudeClient.__init__()` via `disallowed_tools` parameter
+- **Default restrictions**: Filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`), development tools (`Task`, `Bash`, `TodoWrite`, `NotebookEdit`, `ExitPlanMode`), and process management (`BashOutput`, `KillBash`) are disabled
+- **Enabled tools**: Only `WebSearch`, `WebFetch`, and `Skill` tools are available by default
+- **MCP servers**: Can provide additional tools via MCP protocol (e.g., filesystem server with restricted paths)
+
+```python
+# ✅ CORRECT: Security-focused tool configuration
+self.base_options = ClaudeAgentOptions(
+    mcp_servers=mcp_config_path if mcp_config_path else {},
+    disallowed_tools=[
+        # Filesystem tools
+        "Read", "Write", "Edit", "Glob", "Grep",
+        # Development tools
+        "Task", "Bash", "TodoWrite", "NotebookEdit", "ExitPlanMode",
+        # Process management
+        "BashOutput", "KillBash",
+    ],
+)
+```
+
+**To enable additional tools:**
+1. Edit `bot/claude_client.py`
+2. Remove tools from `disallowed_tools` list
+3. Rebuild and restart container
+
+**Security Note**: Enabling `Bash` or filesystem tools allows the bot to execute system commands and access files. Only enable these if you trust the bot and have proper access controls in place.
 
 ## Code Examples
 
@@ -283,36 +536,78 @@ async for message in client.receive_response():
 ```python
 from bot.claude_client import ClaudeClient
 from bot.session_manager import SessionManager
+from bot.tool_approval import ToolApprovalManager
+from slack_sdk.web.async_client import AsyncWebClient
 
 session_manager = SessionManager()
+slack_client = AsyncWebClient(token=os.getenv("SLACK_BOT_TOKEN"))
+approval_manager = ToolApprovalManager(slack_client)
+
 claude_client = ClaudeClient(
     session_manager=session_manager,
-    tool_approval_callback=approval_callback  # Optional
+    feedback_callback=None,  # Can be set per-thread via set_feedback_callback()
+    approval_manager=approval_manager
 )
 ```
 
 ### Sending a Message
 
 ```python
-async for message in claude_client.send_message(thread_id, user_message):
-    if isinstance(message, AssistantMessage):
-        # Process assistant response
+# Set feedback callback and channel_id for this thread
+claude_client.set_feedback_callback(thread_ts, feedback_callback)
+claude_client.set_channel_id(thread_ts, channel_id)
+
+# Send message and process responses
+async for message in claude_client.send_message(thread_ts, user_message):
+    if isinstance(message, SystemMessage):
+        # Handle system messages (status updates, errors)
         pass
+    elif isinstance(message, AssistantMessage):
+        # Process assistant response (check for ToolUseBlocks, format text)
+        has_tool_use = any(
+            isinstance(block, ToolUseBlock) 
+            for block in message.content
+        )
+        if not has_tool_use:
+            # Format and send to Slack
+            formatted_blocks = self._format_assistant_message(message)
+            await say(blocks=formatted_blocks, thread_ts=thread_ts)
     elif isinstance(message, ResultMessage):
         # Extract session_id for storage
         session_id = message.session_id
+        self.session_manager.store_session(thread_ts, session_id)
 ```
 
-### Tool Approval Callback
+### Tool Approval Manager Usage
 
 ```python
-async def approval_callback(thread_id, tool_info, tool_use_id):
-    # Request approval from user
-    approved = await request_user_approval(...)
-    return {
-        "decision": "allow" if approved else "deny",
-        "message": "User approved" if approved else "User denied"
-    }
+# ToolApprovalManager is used internally by hooks
+# But you can also use it directly:
+
+approval_manager = ToolApprovalManager(slack_client, approval_timeout=300)
+
+# Request approval (called from PreToolUse hook)
+approval_id, approved, message_ts = await approval_manager.request_approval(
+    thread_id=thread_id,
+    channel_id=channel_id,
+    tool_name="WebSearch",
+    tool_input={"query": "Python async"},
+    tool_use_id="toolu_123"
+)
+
+# Handle button click (in Slack event handler)
+@self.app.action("tool_approve")
+async def handle_tool_approve(ack, body):
+    await ack()
+    approval_id = body["actions"][0]["value"]
+    approval_manager.handle_approval_response(approval_id, approved=True)
+
+# Update approval message with result (called from PostToolUse hook)
+await approval_manager.update_approval_message_with_result(
+    tool_use_id="toolu_123",
+    tool_result={"results": [...]},
+    is_error=False
+)
 ```
 
 ### Docker Compose Commands
@@ -328,6 +623,43 @@ docker compose ps
 # ❌ WRONG: Don't use legacy docker-compose (hyphen)
 docker-compose build  # Avoid this
 ```
+
+### Entry Point and Startup
+
+**Application Entry Point:**
+
+- **`main.py`**: Entry point that calls `bot.app.main()` with error handling
+- **`bot/app.py`**: Contains `ButabotApp` class and `main()` function
+- **Socket Mode**: Primary mode (requires `SLACK_APP_TOKEN`)
+- **HTTP Mode**: Not yet implemented (raises `NotImplementedError`)
+
+```python
+# ✅ CORRECT: Entry point pattern
+# main.py
+import asyncio
+from bot.app import main
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+# bot/app.py
+async def main():
+    bot = ButabotApp()
+    use_socket_mode = os.getenv("SLACK_APP_TOKEN") is not None
+    
+    if use_socket_mode:
+        await bot.start_socket_mode()
+    else:
+        await bot.start_http(port)  # Not implemented
+```
+
+**Startup Sequence:**
+
+1. Load environment variables (`.env` file)
+2. Initialize `ButabotApp` (creates Slack app, session manager, approval manager, Claude client)
+3. Register event handlers (`app_mention`, `tool_approve`, `tool_deny`)
+4. Start Socket Mode handler (connects to Slack)
+5. Process events asynchronously
 
 ## References
 

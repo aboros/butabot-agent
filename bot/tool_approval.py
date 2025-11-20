@@ -117,7 +117,9 @@ class ToolApprovalManager:
                 channel=channel_id,
                 thread_ts=thread_id,
                 blocks=blocks,
-                text=f"Tool approval requested: {tool_name}"
+                text=f"Tool approval requested: {tool_name}",
+                unfurl_links=False,
+                unfurl_media=False
             )
             message_ts = response.get("ts")
             # Store message_ts in approval data
@@ -138,7 +140,9 @@ class ToolApprovalManager:
             await self.slack_client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_id,
-                text=f"⏱️ Tool approval request timed out. Denying `{tool_name}`."
+                text=f"⏱️ Tool approval request timed out. Denying `{tool_name}`.",
+                unfurl_links=False,
+                unfurl_media=False
             )
             approved = False
             # Clean up mapping on timeout
@@ -181,7 +185,7 @@ class ToolApprovalManager:
         """Format tool input for display in Slack message."""
         import json
         try:
-            return json.dumps(tool_input, indent=2)
+            return json.dumps(tool_input, indent=2, ensure_ascii=False)
         except Exception:
             return str(tool_input)
     
@@ -222,21 +226,46 @@ class ToolApprovalManager:
         message_ts = approval_data.get("message_ts")
         tool_name = approval_data.get("tool_name", "unknown")
         
-        # Build simple completion message
-        status_emoji = "✅" if not is_error else "❌"
-        status_text = "completed" if not is_error else "failed"
+        # Get the original approval message format and update the context block
+        tool_input = approval_data.get("tool_input", {})
+        tool_input_str = self._format_tool_input(tool_input)
         
-        message_text = f"{status_emoji} *Tool {status_text}:* `{tool_name}`\n\n"
-        message_text += "Tool results received."
+        # Build message using same format as format_approval_message
+        status_emoji = "✅" if not is_error else "❌"
+        status_text = "Approved"  # Keep "Approved" status since it was approved
+        
+        message_text = f"{status_emoji} *Tool {status_text}*\n\n"
+        message_text += f"*Tool:* `{tool_name}`\n"
+        message_text += f"\n*Input parameters:*\n```\n{tool_input_str}\n```"
+        
+        # Build blocks with updated context block
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": message_text
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_Results received._"
+                    }
+                ]
+            }
+        ]
         
         try:
             await self.slack_client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
-                blocks=[{
-                    "type": "markdown",
-                    "text": message_text
-                }]
+                text=f"Tool {status_text}: {tool_name} - Results received",
+                blocks=blocks,
+                unfurl_links=False,
+                unfurl_media=False
             )
             # Clean up approval data after successful update
             if approval_id:
@@ -260,9 +289,9 @@ class ToolApprovalManager:
         if approval_id in self._pending_approvals:
             self._pending_approvals[approval_id]["tool_use_id"] = tool_use_id
     
-    def format_approval_message(self, tool_name: str, tool_input: Dict[str, Any], approved: bool = True) -> str:
+    def format_approval_message(self, tool_name: str, tool_input: Dict[str, Any], approved: bool = True) -> list:
         """
-        Format an informative approval/denial message.
+        Format an informative approval/denial message as Slack blocks.
         
         Args:
             tool_name: Name of the tool
@@ -270,22 +299,49 @@ class ToolApprovalManager:
             approved: True if approved, False if denied
             
         Returns:
-            Formatted message text
+            List of Slack block objects
         """
         tool_input_str = self._format_tool_input(tool_input)
         status_emoji = "✅" if approved else "❌"
         status_text = "Approved" if approved else "Denied"
         
-        message = f"{status_emoji} *Tool {status_text}*\n\n"
-        message += f"*Tool:* `{tool_name}`\n"
-        message += f"\n*Input parameters:*\n```\n{tool_input_str}\n```"
+        message_text = f"{status_emoji} *Tool {status_text}*\n\n"
+        message_text += f"*Tool:* `{tool_name}`\n"
+        message_text += f"\n*Input parameters:*\n```\n{tool_input_str}\n```"
         
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": message_text
+                }
+            }
+        ]
+        
+        # Add context block for status
         if approved:
-            message += "\n\n_Executing tool..._"
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_Executing tool..._"
+                    }
+                ]
+            })
         else:
-            message += "\n\n_Tool execution cancelled._"
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_Tool execution cancelled._"
+                    }
+                ]
+            })
         
-        return message
+        return blocks
     
     def get_pending_approval(self, approval_id: str) -> Optional[Dict[str, Any]]:
         """Get pending approval data."""

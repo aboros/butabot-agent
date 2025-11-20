@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "drupal": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "DRUPAL_AUTH_USER",
+        "-e",
+        "DRUPAL_AUTH_PASSWORD",
+        "--network=host",
+        "ghcr.io/omedia/mcp-server-drupal:latest",
+        "--drupal-url=[DRUPAL_BASE_URL]"
+      ],
+      "env": {
+        "DRUPAL_AUTH_USER": "[DRUPAL_AUTH_USER]",
+        "DRUPAL_AUTH_PASSWORD": "[DRUPAL_AUTH_PASSWORD]"
+      }
+    }
+  }
+}

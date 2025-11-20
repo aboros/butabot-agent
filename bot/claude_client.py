@@ -18,7 +18,6 @@ from claude_agent_sdk import (
     HookContext,
 )
 
-from .mcp_config import load_mcp_config
 from .session_manager import SessionManager
 
 
@@ -53,14 +52,17 @@ class ClaudeClient:
         self._feedback_callbacks: Dict[str, Callable[[str, str], Any]] = {}  # thread_id -> callback
         self._channel_ids: Dict[str, str] = {}  # thread_id -> channel_id
         
-        # Load MCP config
-        mcp_config_path = load_mcp_config()
+        # Use .mcp.json from project root - let SDK handle parsing
+        # According to docs, configure MCP servers in .mcp.json at project root
+        # SDK can load it directly if we pass the path
+        from pathlib import Path
+        mcp_config_path = Path("/app/.mcp.json")
         
-        # Build options with MCP servers
+        # Build options - SDK will handle parsing .mcp.json
         # Disable built-in filesystem tools and other unnecessary tools
         # Only allow: WebSearch, WebFetch, Skill
         self.base_options = ClaudeAgentOptions(
-            mcp_servers=mcp_config_path if mcp_config_path else {},
+            mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
             disallowed_tools=[
                 # Filesystem tools
                 "Read", "Write", "Edit", "Glob", "Grep",
@@ -188,31 +190,20 @@ class ClaudeClient:
             tool_use_id: Optional[str],
             context: HookContext
         ) -> Dict[str, Any]:
-            """Hook that sends feedback after tool execution."""
-            # Get callback dynamically (check per-thread first, then global)
-            callback = self._feedback_callbacks.get(thread_id) or self.feedback_callback or feedback_callback
-            if not callback:
-                return {}
-            
-            tool_name = input_data.get("tool_name", "unknown")
-            tool_result = input_data.get("tool_result", {})
-            is_error = input_data.get("is_error", False)
-            
-            # Format tool result for display
-            tool_result_str = self._format_tool_result(tool_result)
-            
-            # Create feedback message
-            status_emoji = "✅" if not is_error else "❌"
-            feedback = f"{status_emoji} *PostToolUse:* `{tool_name}`\n"
-            if is_error:
-                feedback += f"❌ Error occurred\n"
-            feedback += f"```\n{tool_result_str}\n```"
-            
-            # Send feedback
-            try:
-                await callback(thread_id, feedback)
-            except Exception as e:
-                print(f"Error sending PostToolUse feedback: {e}")
+            """Hook that updates approval message after tool execution."""
+            # Update the approval message instead of sending a new one
+            if self.approval_manager and tool_use_id:
+                tool_result = input_data.get("tool_result", {})
+                is_error = input_data.get("is_error", False)
+                
+                try:
+                    await self.approval_manager.update_approval_message_with_result(
+                        tool_use_id=tool_use_id,
+                        tool_result=tool_result,
+                        is_error=is_error
+                    )
+                except Exception as e:
+                    print(f"Error updating approval message with result: {e}")
             
             return {}
         
@@ -292,6 +283,37 @@ class ClaudeClient:
                             for key in ['message', 'status', 'error', 'info', 'type']:
                                 if key in data:
                                     log(f"  SystemMessage.{key}: {str(data[key])[:200]}")
+                            
+                            # Log MCP server status
+                            if 'mcp_servers' in data:
+                                mcp_servers = data['mcp_servers']
+                                log(f"  MCP Servers: {len(mcp_servers) if isinstance(mcp_servers, list) else 'N/A'} servers")
+                                if isinstance(mcp_servers, list):
+                                    for server in mcp_servers:
+                                        server_name = server.get('name', 'unknown')
+                                        server_status = server.get('status', 'unknown')
+                                        server_tools = server.get('tools', [])
+                                        server_error = server.get('error', None)
+                                        # Log all server fields for debugging
+                                        log(f"    - {server_name}: status={server_status}, tools={len(server_tools) if isinstance(server_tools, list) else 'N/A'}")
+                                        log(f"      Full server data: {json.dumps(server, indent=2, default=str)[:500]}")
+                                        if server_error:
+                                            log(f"      Error: {server_error}", level="ERROR")
+                                        if isinstance(server_tools, list) and server_tools:
+                                            tool_names = [t.get('name', 'unknown') if isinstance(t, dict) else str(t) for t in server_tools[:5]]
+                                            log(f"      Tools: {tool_names}")
+                            
+                            # Log available tools
+                            if 'tools' in data:
+                                tools = data.get('tools', [])
+                                log(f"  Available tools: {len(tools) if isinstance(tools, list) else 'N/A'} total")
+                                if isinstance(tools, list):
+                                    mcp_tools = [t for t in tools if isinstance(t, dict) and t.get('name', '').startswith('mcp__')]
+                                    log(f"    MCP tools: {len(mcp_tools)}")
+                                    if mcp_tools:
+                                        mcp_tool_names = [t.get('name', 'unknown') for t in mcp_tools[:10]]
+                                        log(f"    MCP tool names: {mcp_tool_names}")
+                            
                             # Log full data if it's small enough
                             if len(str(data)) < 500:
                                 log(f"  SystemMessage full data: {data}")
