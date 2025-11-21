@@ -12,14 +12,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    SystemMessage,
-    ResultMessage,
-)
+# No longer using Agent SDK - using Anthropic SDK directly
 
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
@@ -63,6 +56,25 @@ class ButabotApp:
         
         # Register event handlers
         self._register_handlers()
+    
+    async def initialize_mcp_servers(self):
+        """Discover MCP tools at startup (FastMCP manages connections per operation)."""
+        log_info("Discovering MCP tools...")
+        try:
+            await self.claude_client.mcp_client.initialize()
+            tool_count = len(self.claude_client.mcp_client.get_anthropic_tools())
+            log_info(f"MCP tools discovered: {tool_count} tools available")
+        except Exception as e:
+            log_error(f"Error discovering MCP tools: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            # Don't fail startup - bot can still work without MCP tools
+    
+    async def shutdown(self):
+        """Cleanup resources on shutdown (no-op since FastMCP manages connections)."""
+        # FastMCP manages connection lifecycle via async with, so no explicit cleanup needed
+        log_info("Shutdown complete")
     
     def _create_feedback_callback(self, thread_ts: str, say: Callable) -> Callable[[str, str], Any]:
         """
@@ -130,56 +142,36 @@ class ButabotApp:
         
         return False, text
     
-    def _format_assistant_message(self, message: AssistantMessage) -> list[Dict[str, Any]]:
+    def _format_assistant_message(self, message: Dict[str, Any]) -> list[Dict[str, Any]]:
         """
-        Format AssistantMessage with detailed information about its content.
+        Format assistant message for Slack.
         
         Args:
-            message: AssistantMessage instance
+            message: Anthropic API response message dict
             
         Returns:
             List of Slack Block Kit blocks (markdown blocks)
         """
         lines = []
+        content = message.get("content", [])
         
-        # Count blocks by type
-        text_blocks = []
-        tool_use_blocks = []
-        tool_result_blocks = []
-        
-        for block in message.content:
-            if isinstance(block, TextBlock):
-                text_blocks.append(block)
-            elif isinstance(block, ToolUseBlock):
-                tool_use_blocks.append(block)
-            elif isinstance(block, ToolResultBlock):
-                tool_result_blocks.append(block)
-        
-        # Add block counts
-        if text_blocks:
-            for i, block in enumerate(text_blocks, 1):
-                # Check for API errors and format accordingly
-                is_error, formatted_text = self._detect_api_error(block.text)
+        for block in content:
+            if block.get("type") == "text":
+                text = block.get("text", "")
+                is_error, formatted_text = self._detect_api_error(text)
                 
                 if is_error:
                     # For errors, show user-friendly message instead of raw error
                     lines.append(formatted_text)
-                    log_warning(f"Detected API error in TextBlock: {block.text[:200]}")
+                    log_warning(f"Detected API error in text block: {text[:200]}")
                 else:
                     # Show full text content
                     lines.append(formatted_text)
+            elif block.get("type") == "tool_use":
+                # Tool use blocks are handled by approval workflow, skip formatting
+                pass
         
-        if tool_use_blocks:
-            # We don't cast a message for tool use blocks, 
-            # so we don't need to format them.
-            # Tool use will be handled by the PreToolUse hook.
-            pass
-        
-        if tool_result_blocks:
-            # Tool result will be handled by the PostToolUse hook.
-            pass
-        
-        if not text_blocks and not tool_use_blocks and not tool_result_blocks:
+        if not lines:
             lines.append("_Claude API sent an empty message._")
         
         # Join lines and create markdown block
@@ -333,24 +325,23 @@ class ButabotApp:
                 
                 try:
                     response_sent = False
-                    # Stream responses and process every AssistantMessage
+                    # Stream responses and process assistant messages
                     try:
                         async for message in self.claude_client.send_message(thread_ts, user_message):
-                            # Skip SystemMessage and ResultMessage (already logged in claude_client)
-                            if isinstance(message, (SystemMessage, ResultMessage)):
-                                continue
-                            
-                            if isinstance(message, AssistantMessage):
+                            # Handle assistant messages
+                            if message.get("type") == "assistant":
+                                content = message.get("content", [])
+                                
                                 # Log agent message with response type and block types
-                                block_types = [type(block).__name__ for block in message.content]
-                                # Extract tool information if ToolUseBlock is present
+                                block_types = [block.get("type", "unknown") for block in content]
+                                # Extract tool information if tool_use block is present
                                 tool_name = None
                                 tool_use_id = None
-                                for block in message.content:
-                                    if isinstance(block, ToolUseBlock):
-                                        tool_name = block.name
-                                        tool_use_id = block.id
-                                        break  # Use first ToolUseBlock if multiple
+                                for block in content:
+                                    if block.get("type") == "tool_use":
+                                        tool_name = block.get("name")
+                                        tool_use_id = block.get("id")
+                                        break  # Use first tool_use block if multiple
                                 log_agent_message(
                                     message_type="AssistantMessage",
                                     block_types=block_types,
@@ -359,13 +350,13 @@ class ButabotApp:
                                     tool_use_id=tool_use_id
                                 )
                                 
-                                # Check if message contains ToolUseBlocks
+                                # Check if message contains tool_use blocks
                                 has_tool_use = any(
-                                    isinstance(block, ToolUseBlock) 
-                                    for block in message.content
+                                    block.get("type") == "tool_use"
+                                    for block in content
                                 )
                                 
-                                # Skip sending if message contains ToolUseBlocks (handled by PreToolUse hook)
+                                # Skip sending if message contains tool_use blocks (handled by approval workflow)
                                 if has_tool_use:
                                     continue
                                 
@@ -669,16 +660,24 @@ async def main():
     """Main entry point."""
     bot = ButabotApp()
     
-    # Check if we should use Socket Mode or HTTP
-    use_socket_mode = os.getenv("SLACK_APP_TOKEN") is not None
-    
-    if use_socket_mode:
-        print("Starting bot in Socket Mode...")
-        await bot.start_socket_mode()
-    else:
-        print("Starting bot in HTTP Mode...")
-        port = int(os.getenv("PORT", "3000"))
-        await bot.start_http(port)
+    try:
+        # Initialize MCP servers before starting Slack connection
+        await bot.initialize_mcp_servers()
+        
+        # Check if we should use Socket Mode or HTTP
+        use_socket_mode = os.getenv("SLACK_APP_TOKEN") is not None
+        
+        if use_socket_mode:
+            print("Starting bot in Socket Mode...")
+            await bot.start_socket_mode()
+        else:
+            print("Starting bot in HTTP Mode...")
+            port = int(os.getenv("PORT", "3000"))
+            await bot.start_http(port)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        await bot.shutdown()
 
 
 if __name__ == "__main__":

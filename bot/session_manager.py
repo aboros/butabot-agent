@@ -1,40 +1,79 @@
-"""Session manager for mapping Slack thread IDs to Agent SDK session IDs."""
+"""Session manager for mapping Slack thread IDs to conversation message history."""
 
 from typing import Optional
 
 
 class SessionManager:
-    """Manages mapping between Slack thread IDs and Agent SDK session IDs.
+    """Manages conversation history per Slack thread.
     
-    The SDK provides session IDs in ResultMessage. We store them here
-    for potential future resume (e.g., after restart).
+    Stores full message arrays for each thread to maintain conversation context
+    for the Anthropic Messages API.
     """
     
     def __init__(self):
         """Initialize the session manager with empty storage."""
-        self._sessions: dict[str, str] = {}  # thread_id -> session_id (from SDK)
+        self._sessions: dict[str, list[dict]] = {}  # thread_id -> messages[]
     
-    def store_session(self, thread_id: str, session_id: str):
+    def get_messages(self, thread_id: str) -> list[dict]:
         """
-        Store the SDK-provided session ID for a thread.
-        
-        Args:
-            thread_id: Slack thread timestamp (thread_ts)
-            session_id: Agent SDK session ID (provided by SDK in ResultMessage)
-        """
-        self._sessions[thread_id] = session_id
-    
-    def get_session(self, thread_id: str) -> Optional[str]:
-        """
-        Get existing session ID for a thread.
+        Get full conversation history for a thread.
         
         Args:
             thread_id: Slack thread timestamp (thread_ts)
             
         Returns:
-            Agent SDK session ID if exists, None otherwise
+            List of message dictionaries in conversation order
         """
-        return self._sessions.get(thread_id)
+        return self._sessions.get(thread_id, [])
+    
+    def store_messages(self, thread_id: str, messages: list[dict]):
+        """
+        Store/update full conversation history for a thread.
+        
+        Args:
+            thread_id: Slack thread timestamp (thread_ts)
+            messages: List of message dictionaries
+        """
+        self._sessions[thread_id] = messages
+    
+    def add_message(self, thread_id: str, message: dict):
+        """
+        Add a single message to conversation history.
+        
+        Args:
+            thread_id: Slack thread timestamp (thread_ts)
+            message: Message dictionary to add
+        """
+        if thread_id not in self._sessions:
+            self._sessions[thread_id] = []
+        self._sessions[thread_id].append(message)
+    
+    def clear_session(self, thread_id: str):
+        """
+        Clear conversation history for a thread.
+        
+        Args:
+            thread_id: Slack thread timestamp (thread_ts)
+        """
+        if thread_id in self._sessions:
+            del self._sessions[thread_id]
+    
+    # Keep existing methods for compatibility during migration:
+    def store_session(self, thread_id: str, session_id: str):
+        """
+        Deprecated: kept for compatibility.
+        
+        No longer used - session IDs are not needed with direct API usage.
+        """
+        pass
+    
+    def get_session(self, thread_id: str) -> Optional[str]:
+        """
+        Deprecated: kept for compatibility.
+        
+        No longer used - session IDs are not needed with direct API usage.
+        """
+        return None
     
     def has_session(self, thread_id: str) -> bool:
         """

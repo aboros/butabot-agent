@@ -4,114 +4,135 @@ alwaysApply: true
 
 # Butabot Agent Development Rules
 
-> Best practices and architectural patterns for the Butabot Slack bot using Anthropic Agent SDK.
+> Best practices and architectural patterns for the Butabot Slack bot using Anthropic Messages API and FastMCP.
 
 ## Architecture Overview
 
 The bot uses a layered architecture:
 - **Slack Layer** (`bot/app.py`): Handles Slack events (`app_mention`), button interactions (`tool_approve`, `tool_deny`), message formatting, API error detection
-- **Claude Layer** (`bot/claude_client.py`): Wraps Agent SDK for thread-aware conversations, manages client lifecycle, creates hooks for tool approval and feedback
-- **Session Layer** (`bot/session_manager.py`): Maps Slack threads to Agent SDK sessions (in-memory storage)
+- **Claude Layer** (`bot/claude_client.py`): Wraps Anthropic Messages API for thread-aware conversations, manages conversation history, handles tool execution loop
+- **MCP Layer** (`bot/mcp_client.py`): FastMCP client wrapper for MCP server integration, tool discovery, and schema conversion
+- **Session Layer** (`bot/session_manager.py`): Maps Slack threads to conversation message history (in-memory storage)
 - **Approval Layer** (`bot/tool_approval.py`): Manages tool approval workflows via `ToolApprovalManager` class
 
 **Key Design Decisions:**
-- **Security-first**: Built-in filesystem and development tools are disabled by default (`disallowed_tools`)
-- **Thread-based**: Each Slack thread maintains its own conversation session
+- **Direct API usage**: Uses Anthropic Messages API directly (not Agent SDK) for full control
+- **FastMCP integration**: Uses FastMCP client for MCP server communication and tool discovery
+- **Thread-based**: Each Slack thread maintains its own conversation history
 - **Tool approval**: All tool usage requires explicit user approval via Slack buttons
-- **Feedback system**: PostToolUse hooks send feedback messages after tool execution
+- **Manual tool loop**: Implements tool execution loop manually (checking `stop_reason == "tool_use"`)
 - **Error handling**: API errors are detected and formatted as user-friendly Slack messages
 
 ## Core Principles
 
 ### 1. Session Management
 
-**CRITICAL: The SDK provides session IDs, we do NOT generate them.**
+**CRITICAL: We manage conversation history manually - no session IDs needed.**
 
-- **Never generate UUIDs or custom session IDs** - The Agent SDK provides session IDs in `ResultMessage.session_id`
-- **Extract and store**: Always extract `session_id` from `ResultMessage` and store it via `SessionManager.store_session()`
-- **Use `resume` parameter**: Only when recreating a client for an existing session (e.g., after restart)
-- **Client per thread**: Maintain one `ClaudeSDKClient` instance per Slack thread (keyed by `thread_id`)
-- **SDK maintains sessions**: `ClaudeSDKClient` automatically maintains conversation context within a client instance
+- **Message history**: Store full conversation history (messages array) per thread
+- **No session IDs**: The Messages API is stateless - we send full history each time
+- **Thread-based storage**: Use `SessionManager.store_messages()` to save conversation history
+- **History retrieval**: Use `SessionManager.get_messages()` to get full conversation for a thread
+- **Message format**: Store messages in Anthropic API format: `[{"role": "user", "content": "..."}, {"role": "assistant", "content": [...]}]`
 
 ```python
-# ✅ CORRECT: Extract session_id from ResultMessage
-async for message in client.receive_response():
-    if isinstance(message, ResultMessage):
-        session_id = message.session_id
-        self.session_manager.store_session(thread_id, session_id)
-    yield message
+# ✅ CORRECT: Store full message history
+messages = self.session_manager.get_messages(thread_id)
+messages.append({"role": "user", "content": user_message})
+messages.append({"role": "assistant", "content": assistant_content})
+self.session_manager.store_messages(thread_id, messages)
 
-# ❌ WRONG: Don't generate session IDs
-session_id = f"slack-{thread_id}-{uuid.uuid4()}"  # NO!
+# ❌ WRONG: Don't try to use session IDs
+session_id = self.session_manager.get_session(thread_id)  # Returns None - not used
 ```
 
 ### 2. Thread-Based Conversations
 
-- **One thread = One conversation**: Each Slack thread maintains its own conversation context
+- **One thread = One conversation**: Each Slack thread maintains its own conversation history
 - **Thread detection**: Use `event.get("thread_ts") or event.get("ts")` to get thread identifier
 - **Context isolation**: Messages in different threads are completely separate conversations
-- **Thread persistence**: Store session IDs per thread for potential resume after restart
+- **Full history**: Always send complete message history to API (API is stateless)
 
-### 3. Agent SDK Usage
+### 3. Anthropic Messages API Usage
 
-**Always use `ClaudeSDKClient` for multi-turn conversations:**
+**Always use `AsyncAnthropic().messages.create()` for multi-turn conversations:**
 
-- **Use `ClaudeSDKClient`** (not `query()`) for Slack bots - maintains context across messages
-- **Client wrapper**: Use `ClaudeClient` wrapper class that manages clients per thread
-- **Connect before query**: Always call `await client.connect()` before sending messages
-- **Stream responses**: Use `receive_response()` to get all messages including `ResultMessage`
-- **Extract session_id**: Always check for `ResultMessage` and extract `session_id`
-- **Client reuse**: Reuse client instances per thread (stored in `_clients` dict)
-- **Resume sessions**: Use `resume` parameter only when recreating client for existing session
-- **Disconnect properly**: Call `disconnect()` when done with a client (or use `disconnect_session()`)
+- **Direct API calls**: Use `AsyncAnthropic` client directly (not Agent SDK)
+- **Stateless API**: Send full conversation history with each request
+- **Tool execution loop**: Manually handle tool use by checking `stop_reason == "tool_use"`
+- **Message format**: Use Anthropic Messages API format for all messages
+- **Tool results**: Add tool results as `{"role": "user", "content": [{"type": "tool_result", ...}]}` messages
 
 ```python
-# ✅ CORRECT: Proper client lifecycle (via ClaudeClient wrapper)
-async def _get_or_create_client(self, thread_id: str) -> ClaudeSDKClient:
-    if thread_id not in self._clients:
-        # Get stored session_id if exists
-        stored_session_id = self.session_manager.get_session(thread_id)
-        
-        # Create options with resume if we have a stored session
-        options = ClaudeAgentOptions(
-            mcp_servers=self.base_options.mcp_servers,
-            resume=stored_session_id if stored_session_id else None,
-            disallowed_tools=self.base_options.disallowed_tools,
-        )
-        
-        # Add hooks for tool approval and feedback
-        if self.approval_manager:
-            hooks = self._create_feedback_hooks(thread_id)
-            if hooks:
-                options.hooks = hooks
-        
-        client = ClaudeSDKClient(options=options)
-        await client.connect()
-        self._clients[thread_id] = client
-    
-    return self._clients[thread_id]
+# ✅ CORRECT: Proper API usage pattern
+from anthropic import AsyncAnthropic
+
+client = AsyncAnthropic(api_key=api_key)
+
+# Get conversation history
+messages = self.session_manager.get_messages(thread_id)
+messages.append({"role": "user", "content": user_message})
+
+# Call API
+response = await client.messages.create(
+    model=self.model,
+    max_tokens=self.max_tokens,
+    messages=messages,
+    tools=tools if tools else None,
+)
+
+# Handle tool use
+if response.stop_reason == "tool_use":
+    # Execute tools and add results to history
+    for block in response.content:
+        if block.type == "tool_use":
+            result = await self._execute_tool(block.name, block.input)
+            messages.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result
+                }]
+            })
+    # Continue loop to get Claude's response
 ```
 
 ### 4. MCP Server Configuration
 
-**CRITICAL: The SDK automatically loads `.mcp.json` from the project root. No custom parsing needed.**
+**CRITICAL: FastMCP Client loads `.mcp.json` and handles all MCP server communication.**
 
 - **Standard location**: Create `.mcp.json` in the project root (not in `config/` subdirectory)
-- **SDK handles parsing**: Pass the path to `.mcp.json` and let the SDK handle everything
-- **No custom code needed**: The SDK automatically discovers and parses `.mcp.json` - no `mcp_config.py` module required
+- **FastMCP handles parsing**: Pass config dict to `fastmcp.Client()` - it handles everything
+- **Environment variable substitution**: `MCPClientWrapper` substitutes `${VAR_NAME}` patterns from `.env`
 - **Config format**: Follow Claude's MCP config format with `mcpServers` key
-- **Support all types**: SDK supports stdio, HTTP, and SSE server types
+- **Support all types**: FastMCP supports stdio, HTTP, and SSE server types
 - **Docker mounting**: Mount `.mcp.json` to `/app/.mcp.json` in Docker container
 
 ```python
-# ✅ CORRECT: Let SDK handle .mcp.json automatically
+# ✅ CORRECT: Use FastMCP Client with config dict
+from fastmcp import Client
 from pathlib import Path
+import json
 
-# SDK automatically loads and parses .mcp.json
+# Load and parse .mcp.json
 mcp_config_path = Path("/app/.mcp.json")
-options = ClaudeAgentOptions(
-    mcp_servers=mcp_config_path if mcp_config_path.exists() else {}
-)
+if mcp_config_path.exists():
+    with open(mcp_config_path) as f:
+        config = json.load(f)
+        # Substitute environment variables
+        config = self._substitute_env_vars(config)
+else:
+    config = {"mcpServers": {}}
+
+# Create FastMCP client
+mcp_client = Client(config)
+
+# Initialize and discover tools
+async with mcp_client:
+    tools = await mcp_client.list_tools()
+    # Convert to Anthropic format for API
+    anthropic_tools = self._convert_to_anthropic_format(tools)
 ```
 
 **Drupal MCP Server Configuration:**
@@ -193,8 +214,7 @@ RUN apt-get update && apt-get install -y \
 ### 5. Tool Approval Workflow
 
 - **ToolApprovalManager**: Use `ToolApprovalManager` class for managing approval workflows
-- **PreToolUse hooks**: Hooks intercept tool calls before execution and request approval
-- **PostToolUse hooks**: Hooks send feedback after tool execution completes
+- **Manual interception**: Intercept tool calls in `_execute_tool_with_approval()` before execution
 - **Async approval**: Tool approval requests post Slack messages and wait for user response
 - **Timeout handling**: Approval requests timeout after 5 minutes (default), denying by default
 - **Slack interactions**: Use Slack buttons with `action_id` matching handlers (`tool_approve`, `tool_deny`)
@@ -203,29 +223,42 @@ RUN apt-get update && apt-get install -y \
 
 ```python
 # ✅ CORRECT: Tool approval implementation pattern
-# In claude_client.py, hooks are created per-thread:
-async def pre_tool_use_hook(input_data, tool_use_id, context):
-    tool_name = input_data.get("tool_name", "unknown")
-    tool_input = input_data.get("tool_input", {})
-    
+# In claude_client.py, intercept tool use before execution:
+async def _execute_tool_with_approval(
+    self,
+    thread_id: str,
+    tool_use_id: str,
+    tool_name: str,
+    tool_input: Dict[str, Any],
+) -> tuple[bool, Any]:
     # Request approval via ToolApprovalManager
+    approved = True
     if self.approval_manager:
-        approval_id, approved, message_ts = await self.approval_manager.request_approval(
-            thread_id=thread_id,
-            channel_id=channel_id,
-            tool_name=tool_name,
-            tool_input=tool_input,
-            tool_use_id=tool_use_id or "",
-        )
-        decision = "allow" if approved else "deny"
+        channel_id = self._channel_ids.get(thread_id)
+        if channel_id:
+            approval_id, approved, message_ts = await self.approval_manager.request_approval(
+                thread_id=thread_id,
+                channel_id=channel_id,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_use_id=tool_use_id,
+            )
     
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision,
-            "permissionDecisionReason": f"Tool {tool_name} {'approved' if approved else 'denied'}"
-        }
-    }
+    if not approved:
+        return False, "Tool execution denied by user"
+    
+    # Execute tool via FastMCP
+    result = await self.mcp_client.call_tool(tool_name, tool_input)
+    
+    # Update approval message with result
+    if self.approval_manager:
+        await self.approval_manager.update_approval_message_with_result(
+            tool_use_id=tool_use_id,
+            tool_result=result,
+            is_error=False
+        )
+    
+    return True, result
 ```
 
 ### 6. Error Handling
@@ -304,11 +337,12 @@ await slack_client.chat_update(
 **Module responsibilities:**
 
 - **`bot/app.py`**: Slack Bolt app, event handlers (`app_mention`), button handlers (`tool_approve`, `tool_deny`), message formatting, API error detection
-- **`bot/claude_client.py`**: ClaudeSDKClient wrapper, message streaming, session extraction, hook creation (PreToolUse, PostToolUse), feedback callbacks, MCP config path handling
-- **`bot/session_manager.py`**: Thread-to-session mapping, session storage (in-memory dict)
+- **`bot/claude_client.py`**: Anthropic Messages API wrapper, conversation history management, tool execution loop, tool approval interception
+- **`bot/mcp_client.py`**: FastMCP client wrapper, MCP server initialization, tool discovery, schema conversion (MCP → Anthropic format)
+- **`bot/session_manager.py`**: Thread-to-message-history mapping, conversation storage (in-memory dict)
 - **`bot/tool_approval.py`**: Tool approval workflow (`ToolApprovalManager`), Slack interactions, approval request/response handling
 - **`main.py`**: Entry point that calls `bot.app.main()`
-- **`.mcp.json`**: MCP server configuration file in project root (SDK automatically loads this)
+- **`.mcp.json`**: MCP server configuration file in project root (loaded by `MCPClientWrapper`)
 
 **Import patterns:**
 
@@ -326,22 +360,15 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
-# 3. Agent SDK
-from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    ResultMessage,
-    SystemMessage,
-    HookMatcher,
-    HookContext,
-)
+# 3. Anthropic SDK
+from anthropic import AsyncAnthropic
 
-# 4. Local modules
+# 4. FastMCP
+from fastmcp import Client
+
+# 5. Local modules
 from .claude_client import ClaudeClient
+from .mcp_client import MCPClientWrapper
 from .session_manager import SessionManager
 from .tool_approval import ToolApprovalManager
 ```
@@ -350,16 +377,24 @@ from .tool_approval import ToolApprovalManager
 
 - **Always async**: All Slack handlers and Claude client methods are async
 - **Await properly**: Always await async calls, don't forget `await`
-- **Stream handling**: Use `async for` to iterate over message streams
+- **Tool execution loop**: Use `while` loop to handle multiple tool use iterations
+- **FastMCP context**: Always use `async with mcp_client:` for MCP operations
 - **Event loops**: Use `asyncio.run()` for main entry point
 
 ```python
 # ✅ CORRECT: Async patterns
 async def handle_event(event):
-    client = await self._get_or_create_client(thread_id)
-    await client.query(message)
-    async for msg in client.receive_response():
-        # Process message
+    # Send message and handle tool execution loop
+    async for message in self.claude_client.send_message(thread_id, user_message):
+        if message.get("type") == "assistant":
+            # Process assistant response
+            content = message.get("content", [])
+            # Format and send to Slack
+
+# ✅ CORRECT: FastMCP usage
+async with self.mcp_client:
+    tools = await self.mcp_client.list_tools()
+    result = await self.mcp_client.call_tool("tool_name", {"param": "value"})
 ```
 
 ### 10. Docker and Deployment
@@ -367,7 +402,6 @@ async def handle_event(event):
 - **Docker Compose V2**: Use `docker compose` (space, not hyphen) - this is the modern Docker CLI plugin
   - ✅ Use: `docker compose up`, `docker compose down`, `docker compose build`
   - ❌ Avoid: `docker-compose` (legacy standalone binary)
-- **Claude Code CLI**: Must be installed in Docker image (`npm install -g @anthropic-ai/claude-code`)
 - **Node.js required**: MCP servers need Node.js 20+ (install in Dockerfile)
 - **Python version**: Use Python 3.11 (specified in Dockerfile)
 - **Environment variables**: Use `.env` file, load with `python-dotenv`
@@ -389,87 +423,143 @@ async def handle_event(event):
 - **Thread isolation**: Each test thread should use unique `thread_id`
 - **Mock approvals**: Can bypass tool approvals by not passing `approval_manager` to `ClaudeClient`
 - **Error scenarios**: Test timeout, denial, and error cases
-- **Message types**: Test handling of all message types (`SystemMessage`, `AssistantMessage`, `ResultMessage`)
-- **Tool use**: Test that messages with `ToolUseBlock` are not sent to Slack
-- **Session persistence**: Test that `session_id` is extracted and stored correctly
-- **Client reuse**: Test that clients are reused per thread
+- **Message types**: Test handling of assistant messages with text and tool_use blocks
+- **Tool execution loop**: Test that tool use triggers execution loop correctly
+- **Conversation history**: Test that message history is stored and retrieved correctly
+- **FastMCP integration**: Test that MCP tools are discovered and executed correctly
 - **Feedback callbacks**: Test per-thread feedback callback functionality
 
 ### 12. Common Pitfalls to Avoid
 
 **❌ DON'T:**
-- Generate your own session IDs (SDK provides them)
-- Use `query()` for multi-turn conversations (use `ClaudeSDKClient`)
-- Forget to extract `session_id` from `ResultMessage`
-- Create multiple clients for the same thread (reuse client instance via `_get_or_create_client()`)
-- Use `resume` on first message (only for existing sessions)
-- Forget to `await` async calls
-- Ignore `ResultMessage` (contains important metadata)
-- Send AssistantMessages with ToolUseBlocks to Slack (hooks handle them)
+- Try to use session IDs (Messages API is stateless - use message history instead)
+- Forget to send full conversation history with each API call
+- Forget to handle `stop_reason == "tool_use"` in tool execution loop
+- Forget to add tool results to message history before continuing loop
+- Create multiple `AsyncAnthropic` clients (reuse single instance)
+- Forget to use `async with mcp_client:` for MCP operations
+- Forget to convert MCP tool schemas to Anthropic format
+- Send tool_use blocks to Slack (execute tools and send results instead)
 - Forget to set `channel_id` before requesting tool approval
-- Forget to set `feedback_callback` if you want PostToolUse feedback
-- Create custom MCP config parsing code (SDK handles `.mcp.json` automatically)
+- Forget to initialize MCP client before calling tools
+- Hardcode secrets in `.mcp.json` (use environment variables)
 - Use HTTPS for local DDEV sites (use HTTP to avoid SSL certificate issues)
 
 **✅ DO:**
-- Extract `session_id` from `ResultMessage` and store it via `SessionManager.store_session()`
-- Reuse `ClaudeSDKClient` instances per thread (managed by `ClaudeClient` wrapper)
-- Use `resume` only when recreating clients for existing sessions
-- Handle all message types (`AssistantMessage`, `ResultMessage`, `SystemMessage`, `ToolUseBlock`, etc.)
-- Skip sending AssistantMessages that contain ToolUseBlocks (hooks handle approval)
-- Set `feedback_callback` and `channel_id` per thread before sending messages
-- Clean up clients properly with `disconnect_session()` or `disconnect_all()`
-- Show user-friendly error messages in Slack (use `_detect_api_error()`)
-- Log detailed errors to console/logs using `log()` function with flush
-- Use Slack Block Kit format for all messages (markdown blocks)
-- Use `.mcp.json` in project root and let SDK handle parsing automatically
+- Store full conversation history per thread via `SessionManager.store_messages()`
+- Send complete message history with each API call (API is stateless)
+- Handle tool execution loop manually (check `stop_reason == "tool_use"`)
+- Add tool results as `{"role": "user", "content": [{"type": "tool_result", ...}]}` messages
+- Reuse single `AsyncAnthropic` client instance
+- Always use `async with mcp_client:` context manager for MCP operations
+- Convert MCP tool schemas to Anthropic format before passing to API
+- Execute tools and send results, not tool_use blocks
+- Set `channel_id` and `feedback_callback` per thread before sending messages
+- Initialize MCP client before tool discovery (call `await mcp_client.ensure_initialized()`)
+- Use environment variables with `${VAR_NAME}` syntax in `.mcp.json`
 - Mount Docker socket for STDIO MCP servers that use Docker binaries
 - Use HTTP (not HTTPS) for local DDEV sites to avoid SSL certificate issues
 - Verify Drupal user has "Use MCP server" permission when using Drupal MCP
 
 ### 13. Message Processing Patterns
 
-**Always process all message types:**
+**Always process assistant messages and handle tool execution:**
 
 ```python
-async for message in client.receive_response():
-    # Handle SystemMessage (status updates, errors, etc.)
-    if isinstance(message, SystemMessage):
-        subtype = getattr(message, 'subtype', 'unknown')
-        data = getattr(message, 'data', {})
-        # Log or handle system messages
-        continue
-    
-    # Handle ResultMessage (contains session_id and metadata)
-    if isinstance(message, ResultMessage):
-        session_id = message.session_id  # Extract and store!
-        duration = message.duration_ms
-        cost = message.total_cost_usd
-        is_error = message.is_error
-        num_turns = message.num_turns
-        # Store session_id for potential resume
-        self.session_manager.store_session(thread_id, session_id)
-        continue
-    
-    # Handle AssistantMessage (text responses, tool use, etc.)
-    if isinstance(message, AssistantMessage):
-        # Check for ToolUseBlocks (handled by hooks, don't send to Slack)
-        has_tool_use = any(
-            isinstance(block, ToolUseBlock) 
-            for block in message.content
-        )
-        if has_tool_use:
-            continue  # Skip sending, hooks handle it
+# Send message and process responses
+async for message in self.claude_client.send_message(thread_id, user_message):
+    if message.get("type") == "assistant":
+        content = message.get("content", [])
         
-        # Extract text blocks
-        for block in message.content:
-            if isinstance(block, TextBlock):
-                # Check for API errors and format accordingly
-                is_error, formatted_text = self._detect_api_error(block.text)
-                # Format and send to Slack
-            elif isinstance(block, ToolResultBlock):
-                # Tool results are handled by PostToolUse hooks
-                pass
+        # Check for tool use blocks
+        has_tool_use = any(
+            block.get("type") == "tool_use"
+            for block in content
+        )
+        
+        if has_tool_use:
+            # Tool execution is handled internally by send_message()
+            # Continue loop to get Claude's response to tool results
+            continue
+        
+        # Extract text blocks for display
+        text_blocks = [
+            block.get("text", "")
+            for block in content
+            if block.get("type") == "text"
+        ]
+        
+        if text_blocks:
+            # Check for API errors and format accordingly
+            combined_text = "\n".join(text_blocks)
+            is_error, formatted_text = self._detect_api_error(combined_text)
+            
+            # Format and send to Slack
+            formatted_blocks = [{
+                "type": "markdown",
+                "text": formatted_text
+            }]
+            await say(blocks=formatted_blocks, thread_ts=thread_ts)
+```
+
+**Tool execution loop pattern:**
+
+```python
+# Inside send_message() method
+max_iterations = 10
+iteration = 0
+
+while iteration < max_iterations:
+    iteration += 1
+    
+    # Call API with full history
+    response = await self.client.messages.create(
+        model=self.model,
+        max_tokens=self.max_tokens,
+        messages=messages,
+        tools=tools if tools else None,
+    )
+    
+    # Add assistant response to history
+    assistant_message = {
+        "role": "assistant",
+        "content": content_dicts
+    }
+    messages.append(assistant_message)
+    self.session_manager.store_messages(thread_id, messages)
+    
+    # Yield assistant message
+    yield {"type": "assistant", "content": content_dicts}
+    
+    # Check if tools were used
+    if response.stop_reason != "tool_use":
+        break  # No tools - conversation complete
+    
+    # Process tool_use blocks
+    tool_results = []
+    for block in response.content:
+        if block.type == "tool_use":
+            approved, result = await self._execute_tool_with_approval(
+                thread_id=thread_id,
+                tool_use_id=block.id,
+                tool_name=block.name,
+                tool_input=block.input,
+            )
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result,
+                "is_error": not approved
+            })
+    
+    # Add tool results to history
+    if tool_results:
+        messages.append({
+            "role": "user",
+            "content": tool_results
+        })
+        self.session_manager.store_messages(thread_id, messages)
+        # Continue loop to get Claude's response
 ```
 
 ### 14. Environment Variables
@@ -483,51 +573,67 @@ async for message in client.receive_response():
 **Optional:**
 - `PORT`: HTTP server port (default: `3000`, not used in Socket Mode)
 
-**Note**: MCP configuration is in `.mcp.json` at project root. No environment variable needed - SDK auto-discovers it.
+**Note**: MCP configuration is in `.mcp.json` at project root. `MCPClientWrapper` loads and parses it automatically.
 
 **Note**: Socket Mode is the primary mode (requires `SLACK_APP_TOKEN`). HTTP mode is not yet implemented.
 
 ### 15. Performance Considerations
 
-- **Client reuse**: Reuse `ClaudeSDKClient` instances per thread (don't create new ones per message)
-- **Client storage**: Store clients in `_clients` dict keyed by `thread_id`
-- **Connection pooling**: SDK handles connection management internally
-- **Memory**: In-memory session storage (consider persistence for production)
+- **Client reuse**: Reuse single `AsyncAnthropic` client instance (don't create new ones per message)
+- **MCP client reuse**: Reuse `MCPClientWrapper` instance (initialized once, cached tools)
+- **Tool caching**: Cache Anthropic tool definitions after first discovery (avoid re-discovery)
+- **Memory**: In-memory message history storage (consider persistence for production)
 - **Timeout**: Tool approvals timeout after 5 minutes (configurable via `approval_timeout`)
 - **Feedback callbacks**: Per-thread feedback callbacks stored in `_feedback_callbacks` dict
 - **Channel IDs**: Per-thread channel IDs stored in `_channel_ids` dict for approval requests
+- **Tool execution loop**: Limit iterations (default: 10) to prevent infinite loops
 
 ### 16. Security and Tool Restrictions
 
 **Security-First Configuration:**
 
-- **Disabled tools**: Built-in filesystem and development tools are disabled by default
-- **Disallowed tools list**: Configured in `ClaudeClient.__init__()` via `disallowed_tools` parameter
-- **Default restrictions**: Filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`), development tools (`Task`, `Bash`, `TodoWrite`, `NotebookEdit`, `ExitPlanMode`), and process management (`BashOutput`, `KillBash`) are disabled
-- **Enabled tools**: Only `WebSearch`, `WebFetch`, and `Skill` tools are available by default
-- **MCP servers**: Can provide additional tools via MCP protocol (e.g., filesystem server with restricted paths)
+- **MCP-only tools**: Only tools from MCP servers are available (no built-in tools)
+- **Tool filtering**: Filter tools by server name or tool name if needed (implement in `MCPClientWrapper`)
+- **MCP server configuration**: Control which MCP servers are loaded via `.mcp.json`
+- **Filesystem access**: MCP filesystem server can be restricted to specific paths
+- **Tool approval**: All tools require explicit user approval before execution
 
 ```python
 # ✅ CORRECT: Security-focused tool configuration
-self.base_options = ClaudeAgentOptions(
-    mcp_servers=mcp_config_path if mcp_config_path else {},
-    disallowed_tools=[
-        # Filesystem tools
-        "Read", "Write", "Edit", "Glob", "Grep",
-        # Development tools
-        "Task", "Bash", "TodoWrite", "NotebookEdit", "ExitPlanMode",
-        # Process management
-        "BashOutput", "KillBash",
-    ],
-)
+# Only load trusted MCP servers in .mcp.json
+# Example: Restrict filesystem server to specific path
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"],
+      "env": {}
+    }
+  }
+}
+
+# ✅ CORRECT: Filter tools if needed (in MCPClientWrapper)
+def get_anthropic_tools(self) -> List[Dict[str, Any]]:
+    """Convert cached MCP tools to Anthropic format, optionally filtering."""
+    all_tools = [
+        {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "input_schema": self._convert_schema(tool.get("inputSchema", {}))
+        }
+        for tool in self._tools
+        # Add filtering logic here if needed
+        # if not tool["name"].startswith("dangerous_")
+    ]
+    return all_tools
 ```
 
-**To enable additional tools:**
-1. Edit `bot/claude_client.py`
-2. Remove tools from `disallowed_tools` list
-3. Rebuild and restart container
+**To restrict tools:**
+1. Edit `.mcp.json` to only include trusted MCP servers
+2. Configure MCP servers with restricted paths/permissions
+3. Implement tool filtering in `MCPClientWrapper.get_anthropic_tools()` if needed
 
-**Security Note**: Enabling `Bash` or filesystem tools allows the bot to execute system commands and access files. Only enable these if you trust the bot and have proper access controls in place.
+**Security Note**: MCP servers can execute system commands and access files. Only configure trusted MCP servers and use proper access controls (restricted paths, read-only mounts, etc.).
 
 ## Code Examples
 
@@ -559,23 +665,25 @@ claude_client.set_channel_id(thread_ts, channel_id)
 
 # Send message and process responses
 async for message in claude_client.send_message(thread_ts, user_message):
-    if isinstance(message, SystemMessage):
-        # Handle system messages (status updates, errors)
-        pass
-    elif isinstance(message, AssistantMessage):
-        # Process assistant response (check for ToolUseBlocks, format text)
+    if message.get("type") == "assistant":
+        content = message.get("content", [])
+        
+        # Check for tool use (handled internally)
         has_tool_use = any(
-            isinstance(block, ToolUseBlock) 
-            for block in message.content
+            block.get("type") == "tool_use"
+            for block in content
         )
+        
         if not has_tool_use:
-            # Format and send to Slack
-            formatted_blocks = self._format_assistant_message(message)
-            await say(blocks=formatted_blocks, thread_ts=thread_ts)
-    elif isinstance(message, ResultMessage):
-        # Extract session_id for storage
-        session_id = message.session_id
-        self.session_manager.store_session(thread_ts, session_id)
+            # Extract text blocks and format for Slack
+            text_blocks = [
+                block.get("text", "")
+                for block in content
+                if block.get("type") == "text"
+            ]
+            if text_blocks:
+                formatted_blocks = self._format_text_blocks(text_blocks)
+                await say(blocks=formatted_blocks, thread_ts=thread_ts)
 ```
 
 ### Tool Approval Manager Usage
@@ -663,6 +771,8 @@ async def main():
 
 ## References
 
-- Agent SDK Documentation: See `AGENT_SDK.mdc` for complete SDK reference
+- Anthropic Messages API: See `CLAUDE_MESSAGES_API.mdc` for API patterns
+- FastMCP Client: See `FASTMCP_CLIENT.mdc` for FastMCP usage
 - Slack Bolt Python: https://slack.dev/bolt-python/
 - MCP Protocol: https://modelcontextprotocol.io/
+- Anthropic Python SDK: https://github.com/anthropics/anthropic-sdk-python

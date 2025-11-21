@@ -1,14 +1,14 @@
 # Butabot Agent
 
-A Slack bot powered by Anthropic's Agent SDK that maintains conversation context in threads and integrates with MCP (Model Context Protocol) servers for tool usage.
+A Slack bot powered by Anthropic's Messages API that maintains conversation context in threads and integrates with MCP (Model Context Protocol) servers via FastMCP for tool usage.
 
 ## Features
 
-- **Thread-aware conversations**: Maintains context within Slack threads using Agent SDK sessions
-- **MCP integration**: Supports MCP servers (Filesystem, Brave Search, Drupal MCP, etc.) via config file
+- **Thread-aware conversations**: Maintains context within Slack threads using conversation history
+- **MCP integration**: Supports MCP servers (Filesystem, Brave Search, Drupal MCP, etc.) via FastMCP client
 - **Tool approvals**: Interactive Slack buttons for approving/denying tool usage
-- **Security-focused**: Filesystem tools enabled for Drupal development, Bash and other dev tools disabled by default
-- **Drupal-ready**: Configured for Drupal development with filesystem access
+- **Security-focused**: Only MCP-provided tools are available (no built-in tools)
+- **Drupal-ready**: Configured for Drupal development with filesystem access via MCP
 - **Async processing**: Full async/await support for responsive interactions
 - **Docker support**: Ready for deployment on DigitalOcean or any container platform
 
@@ -16,9 +16,10 @@ A Slack bot powered by Anthropic's Agent SDK that maintains conversation context
 
 The bot uses:
 - **Slack Bolt** for Python - Handles Slack events and interactions
-- **Anthropic Agent SDK** - Manages Claude conversations and tool execution
+- **Anthropic Messages API** - Direct API calls for Claude conversations and tool execution
+- **FastMCP** - MCP client library for server communication and tool discovery
 - **MCP Servers** - External tools accessible via Model Context Protocol
-- **Session Management** - Maps Slack thread IDs to Agent SDK sessions
+- **Session Management** - Maps Slack thread IDs to conversation message history
 
 ## Prerequisites
 
@@ -26,7 +27,7 @@ The bot uses:
 - **Slack workspace** with bot app created
 - **Anthropic API key** (stored in `.env` file)
 
-**Note**: Python, Node.js, and Claude Code CLI are all installed automatically inside the Docker container - you don't need to install them on your host machine.
+**Note**: Python and Node.js are installed automatically inside the Docker container - you don't need to install them on your host machine.
 
 ## Setup
 
@@ -101,9 +102,10 @@ The bot is configured for Drupal development with filesystem tools enabled. You 
 ```
 
 **Note**: 
-- By default, the bot has filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`) enabled for Drupal development.
-- The agent's working directory is restricted to `/app/data` for security.
-- You can add MCP servers for additional functionality (Drupal MCP, Brave Search, etc.).
+- The bot uses MCP servers for all tools (no built-in tools).
+- Configure filesystem MCP server in `.mcp.json` for file operations.
+- The agent's working directory is restricted to `/app/data` for security (configure in MCP server args).
+- You can add multiple MCP servers for additional functionality (Drupal MCP, Brave Search, etc.).
 
 ### 4. Create Slack App
 
@@ -167,21 +169,20 @@ When Claude wants to use a tool:
 
 ### Available Tools
 
-The bot is configured for Drupal development with filesystem tools enabled:
+The bot uses MCP servers for all tools. Configure tools via `.mcp.json`:
 
-**Enabled Tools:**
-- **Filesystem tools**: `Read`, `Write`, `Edit`, `Glob`, `Grep` - For working with Drupal site files
-- **WebSearch** - Search the web for current information
-- **WebFetch** - Fetch and analyze web page content
-- **Skill** - Execute specialized skills (if configured)
-- **MCP Tools** - Drupal MCP server tools (configured in `.mcp.json`)
+**Common MCP Servers:**
+- **Filesystem MCP**: `Read`, `Write`, `Edit`, `Glob`, `Grep` - For working with Drupal site files
+- **Brave Search MCP**: Web search capabilities
+- **Drupal MCP**: Drupal-specific operations (enable modules, clear cache, etc.)
 
-**Disabled Tools (for security):**
-- **Bash** - Command execution (disabled by default, enable if you need Drush/Composer)
-- **BashOutput**, **KillBash** - Process management
-- **Task**, **TodoWrite**, **NotebookEdit**, **ExitPlanMode** - Other development tools
+**Tool Configuration:**
+- All tools come from MCP servers configured in `.mcp.json`
+- No built-in tools are available (security-focused design)
+- Each MCP server provides its own set of tools
+- Tools are discovered automatically when MCP servers are initialized
 
-**Note**: The agent's working directory is restricted to `/app/data`. Mount your Drupal site folders (or any folders) in `docker-compose.yml` to give the agent access. You can mount folders from anywhere on the host. To enable Bash or other tools, modify `bot/claude_client.py` and update the `disallowed_tools` list.
+**Note**: The agent's working directory is restricted to `/app/data`. Mount your Drupal site folders (or any folders) in `docker-compose.yml` to give the agent access. Configure the filesystem MCP server to use `/app/data` as its root path.
 
 ## Drupal Development Setup
 
@@ -264,9 +265,10 @@ butabot-agent/
 ├── bot/
 │   ├── __init__.py        # Package init
 │   ├── app.py            # Slack Bolt app and event handlers
-│   ├── claude_client.py  # ClaudeSDKClient wrapper
+│   ├── claude_client.py  # Anthropic Messages API wrapper
+│   ├── mcp_client.py    # FastMCP client wrapper
 │   ├── tool_approval.py  # Tool approval workflow
-│   └── session_manager.py # Thread-to-session mapping
+│   └── session_manager.py # Thread-to-message-history mapping
 ├── docker/
 │   └── Dockerfile        # Docker container definition
 ├── requirements.txt      # Python dependencies
@@ -537,24 +539,24 @@ API_TOKEN=your-actual-token-here
 ### Session not maintaining context
 
 1. Ensure you're replying in the same thread (use thread_ts)
-2. Check that session_manager is working (logs should show session creation)
-3. Verify `resume` parameter is being passed to ClaudeSDKClient
+2. Check that session_manager is working (logs should show message history storage)
+3. Verify conversation history is being stored correctly (check `SessionManager.store_messages()`)
 
 ### Tool access restrictions
 
-The bot has a security-focused configuration that disables most built-in tools. If you need additional tools:
+The bot only uses tools from MCP servers. To add more tools:
 
-1. Edit `bot/claude_client.py`
-2. Modify the `disallowed_tools` list in `ClaudeClient.__init__()`
-3. Remove tools you want to enable from the list
-4. Rebuild and restart the container
+1. Edit `.mcp.json` to add additional MCP servers
+2. Configure MCP servers with appropriate permissions and paths
+3. Rebuild and restart the container
 
-**Security Note**: Enabling `Bash` or filesystem tools (`Read`, `Write`, etc.) allows the bot to execute system commands in the container. Only enable these if you trust the bot and have proper access controls in place.
+**Security Note**: MCP servers can execute system commands and access files. Only configure trusted MCP servers and use proper access controls (restricted paths, read-only mounts, etc.).
 
 ### Code Structure
 
-- **Session Management**: `bot/session_manager.py` - Maps threads to sessions
-- **Claude Integration**: `bot/claude_client.py` - Wraps Agent SDK client
+- **Session Management**: `bot/session_manager.py` - Maps threads to message history
+- **Claude Integration**: `bot/claude_client.py` - Wraps Anthropic Messages API
+- **MCP Integration**: `bot/mcp_client.py` - FastMCP client wrapper
 - **Tool Approvals**: `bot/tool_approval.py` - Handles approval workflow
 - **Slack Events**: `bot/app.py` - Main Slack Bolt app
 
@@ -569,7 +571,8 @@ Contributions welcome! Please open an issue or pull request.
 ## Support
 
 For issues and questions:
-- Check the [Anthropic Agent SDK docs](https://docs.claude.com/en/docs/agent-sdk/python)
+- Check the [Anthropic Messages API docs](https://docs.anthropic.com/en/api/messages)
+- Review [FastMCP documentation](https://fastmcp.dev/)
 - Review [Slack Bolt for Python docs](https://slack.dev/bolt-python/)
 - Open an issue on GitHub
 

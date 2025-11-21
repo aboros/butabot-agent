@@ -27,10 +27,6 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Claude Code CLI (required by Agent SDK)
-# Try latest version to see if HTTP MCP server support is available
-RUN npm install -g @anthropic-ai/claude-code@latest
-
 # Copy only necessary application files (not entire project root)
 COPY bot/ ./bot/
 COPY .mcp.json .
