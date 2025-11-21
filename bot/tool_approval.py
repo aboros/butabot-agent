@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 from datetime import datetime
 
 from slack_sdk.web.async_client import AsyncWebClient
+from .logger import log_error, log_slack_api_call
 
 
 class ToolApprovalManager:
@@ -127,7 +128,7 @@ class ToolApprovalManager:
                 self._pending_approvals[approval_id]["message_ts"] = message_ts
         except Exception as e:
             # If we can't post, deny by default
-            print(f"Error posting approval request: {e}")
+            log_error(f"Error posting approval request: {e}")
             self._cleanup_approval(approval_id)
             return approval_id, False, None
         
@@ -137,13 +138,21 @@ class ToolApprovalManager:
             approved = self._approval_results.get(approval_id, False)
         except asyncio.TimeoutError:
             # Timeout - deny by default
-            await self.slack_client.chat_postMessage(
+            additional_info = f"type=timeout | tool={tool_name}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            log_slack_api_call(method="chat_postMessage", thread_ts=thread_id, additional_info=additional_info)
+            response = await self.slack_client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_id,
                 text=f"⏱️ Tool approval request timed out. Denying `{tool_name}`.",
                 unfurl_links=False,
                 unfurl_media=False
             )
+            if response and isinstance(response, dict):
+                response_ts = response.get("ts")
+                if response_ts:
+                    log_slack_api_call(method="chat_postMessage", thread_ts=thread_id, ts=response_ts, additional_info=additional_info)
             approved = False
             # Clean up mapping on timeout
             if tool_use_id in self._approvals_by_tool_use_id:
@@ -259,6 +268,10 @@ class ToolApprovalManager:
         ]
         
         try:
+            additional_info = f"type=approval_result | tool={tool_name} | is_error={is_error}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            log_slack_api_call(method="chat_update", thread_ts=approval_data.get("thread_id"), ts=message_ts, additional_info=additional_info)
             await self.slack_client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
@@ -275,7 +288,7 @@ class ToolApprovalManager:
                 self._cleanup_approval(approval_id)
             return True
         except Exception as e:
-            print(f"Error updating approval message with result: {e}")
+            log_error(f"Error updating approval message with result: {e}")
             return False
     
     def store_tool_use_mapping(self, tool_use_id: str, approval_id: str):

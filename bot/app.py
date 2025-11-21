@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from typing import Any, Callable, Dict
 
@@ -23,11 +24,14 @@ from claude_agent_sdk import (
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
 from .tool_approval import ToolApprovalManager
-
-
-def log(message: str, level: str = "INFO"):
-    """Log message with flush to ensure it appears in Docker logs."""
-    print(f"[{level}] {message}", file=sys.stderr, flush=True)
+from .logger import (
+    log_slack_event,
+    log_agent_message,
+    log_slack_api_call,
+    log_info,
+    log_error,
+    log_warning,
+)
 
 
 # Load environment variables
@@ -74,17 +78,25 @@ class ButabotApp:
         async def feedback_callback(thread_id: str, feedback_message: str) -> None:
             """Send feedback message to Slack."""
             try:
-                await say(
-                    blocks=[{
-                        "type": "markdown",
-                        "text": feedback_message
-                    }],
+                feedback_blocks = [{
+                    "type": "markdown",
+                    "text": feedback_message
+                }]
+                text_content = self._extract_text_from_blocks(feedback_blocks)
+                log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=feedback")
+                response = await say(
+                    text=text_content,
+                    blocks=feedback_blocks,
                     thread_ts=thread_ts,
                     unfurl_links=False,
                     unfurl_media=False
                 )
+                if response and isinstance(response, dict):
+                    response_ts = response.get("ts")
+                    if response_ts:
+                        log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=feedback")
             except Exception as e:
-                print(f"Error sending feedback message: {e}")
+                log_error(f"Error sending feedback message: {e}")
         
         return feedback_callback
     
@@ -152,7 +164,7 @@ class ButabotApp:
                 if is_error:
                     # For errors, show user-friendly message instead of raw error
                     lines.append(formatted_text)
-                    log(f"Detected API error in TextBlock: {block.text[:200]}", level="WARNING")
+                    log_warning(f"Detected API error in TextBlock: {block.text[:200]}")
                 else:
                     # Show full text content
                     lines.append(formatted_text)
@@ -213,6 +225,43 @@ class ButabotApp:
         except Exception:
             return str(result)[:100]
     
+    def _extract_text_from_blocks(self, blocks: list[Dict[str, Any]]) -> str:
+        """
+        Extract plain text from Slack Block Kit blocks for use as fallback text.
+        
+        Args:
+            blocks: List of Slack Block Kit block objects
+            
+        Returns:
+            Plain text string extracted from blocks
+        """
+        text_parts = []
+        for block in blocks:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                # Handle markdown blocks
+                if block_type == "markdown" and "text" in block:
+                    text_parts.append(block["text"])
+                # Handle section blocks with text
+                elif block_type == "section" and "text" in block:
+                    text_obj = block["text"]
+                    if isinstance(text_obj, dict) and "text" in text_obj:
+                        text_parts.append(text_obj["text"])
+                # Handle context blocks
+                elif block_type == "context" and "elements" in block:
+                    for element in block["elements"]:
+                        if isinstance(element, dict) and "text" in element:
+                            text_parts.append(element["text"])
+        
+        # Join all text parts and strip markdown formatting for plain text
+        combined_text = " ".join(text_parts)
+        # Remove markdown formatting for plain text fallback
+        combined_text = re.sub(r'\*\*(.*?)\*\*', r'\1', combined_text)  # Bold
+        combined_text = re.sub(r'\*(.*?)\*', r'\1', combined_text)  # Italic
+        combined_text = re.sub(r'`(.*?)`', r'\1', combined_text)  # Code
+        combined_text = re.sub(r'```[\s\S]*?```', '', combined_text)  # Code blocks
+        return combined_text.strip() if combined_text.strip() else "Message updated"
+    
     def _register_handlers(self):
         """Register Slack event and action handlers."""
         
@@ -220,13 +269,13 @@ class ButabotApp:
         async def handle_app_mention(event: Dict[str, Any], say, client):
             """Handle bot mentions."""
             try:
-                log(f"Received app_mention event: {event.get('text', '')[:100]}")
+                # Log incoming Slack event
+                event_ts = event.get("ts")
+                log_slack_event(event_type="app_mention", event_ts=event_ts)
                 
                 # Extract event data
                 channel_id = event.get("channel")
                 thread_ts = event.get("thread_ts") or event.get("ts")  # Use thread_ts if in thread, else ts
-                
-                log(f"Processing message in channel={channel_id}, thread_ts={thread_ts}")
                 
                 # Get bot user ID
                 auth_response = await self.slack_client.auth_test()
@@ -238,18 +287,24 @@ class ButabotApp:
                     user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
                 
                 if not user_message:
-                    await say(
-                        blocks=[{
-                            "type": "markdown",
-                            "text": "Hello! How can I help you?"
-                        }],
+                    hello_blocks = [{
+                        "type": "markdown",
+                        "text": "Hello! How can I help you?"
+                    }]
+                    text_content = self._extract_text_from_blocks(hello_blocks)
+                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=hello")
+                    response = await say(
+                        text=text_content,
+                        blocks=hello_blocks,
                         thread_ts=thread_ts,
                         unfurl_links=False,
                         unfurl_media=False
                     )
+                    if response and isinstance(response, dict):
+                        response_ts = response.get("ts")
+                        if response_ts:
+                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=hello")
                     return
-                
-                log(f"Sending message to Claude: {user_message[:100]}")
                 
                 # Create feedback callback for this thread
                 feedback_callback = self._create_feedback_callback(thread_ts, say)
@@ -259,70 +314,59 @@ class ButabotApp:
                 self.claude_client.set_channel_id(thread_ts, channel_id)
                 
                 # Send "thinking" message and store its timestamp for updates
+                thinking_blocks = [{
+                    "type": "markdown",
+                    "text": "🤔 Thinking..."
+                }]
+                text_content = self._extract_text_from_blocks(thinking_blocks)
+                log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=thinking")
                 thinking_response = await say(
-                    blocks=[{
-                        "type": "markdown",
-                        "text": "🤔 Thinking..."
-                    }],
+                    text=text_content,
+                    blocks=thinking_blocks,
                     thread_ts=thread_ts,
                     unfurl_links=False,
                     unfurl_media=False
                 )
                 thinking_ts = thinking_response.get("ts") if thinking_response else None
-                log(f"Sent thinking message, ts={thinking_ts}")
+                if thinking_ts:
+                    log_slack_api_call(method="say", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=thinking")
                 
                 try:
                     response_sent = False
-                    message_count = 0
                     # Stream responses and process every AssistantMessage
-                    log("Starting to iterate over claude_client.send_message()")
                     try:
                         async for message in self.claude_client.send_message(thread_ts, user_message):
-                            message_count += 1
-                            message_type = type(message).__name__
-                            log(f"App received message #{message_count}: {message_type}")
-                            
-                            # Log SystemMessage details
-                            if isinstance(message, SystemMessage):
-                                subtype = getattr(message, 'subtype', 'unknown')
-                                data = getattr(message, 'data', {})
-                                log(f"  SystemMessage subtype: {subtype}")
-                                log(f"  SystemMessage data keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                                if isinstance(data, dict):
-                                    # Log important data fields
-                                    for key in ['message', 'status', 'error', 'info']:
-                                        if key in data:
-                                            log(f"  SystemMessage.{key}: {str(data[key])[:200]}")
-                                continue  # Continue processing after SystemMessage
-                            
-                            # Log ResultMessage details
-                            if isinstance(message, ResultMessage):
-                                log(f"  ResultMessage session_id: {getattr(message, 'session_id', 'N/A')}")
-                                log(f"  ResultMessage duration_ms: {getattr(message, 'duration_ms', 'N/A')}")
-                                log(f"  ResultMessage is_error: {getattr(message, 'is_error', 'N/A')}")
-                                log(f"  ResultMessage num_turns: {getattr(message, 'num_turns', 'N/A')}")
-                                log(f"  ResultMessage total_cost_usd: {getattr(message, 'total_cost_usd', 'N/A')}")
-                                continue  # Continue processing after ResultMessage
+                            # Skip SystemMessage and ResultMessage (already logged in claude_client)
+                            if isinstance(message, (SystemMessage, ResultMessage)):
+                                continue
                             
                             if isinstance(message, AssistantMessage):
+                                # Log agent message with response type and block types
+                                block_types = [type(block).__name__ for block in message.content]
+                                # Extract tool information if ToolUseBlock is present
+                                tool_name = None
+                                tool_use_id = None
+                                for block in message.content:
+                                    if isinstance(block, ToolUseBlock):
+                                        tool_name = block.name
+                                        tool_use_id = block.id
+                                        break  # Use first ToolUseBlock if multiple
+                                log_agent_message(
+                                    message_type="AssistantMessage",
+                                    block_types=block_types,
+                                    thread_ts=thread_ts,
+                                    tool_name=tool_name,
+                                    tool_use_id=tool_use_id
+                                )
+                                
                                 # Check if message contains ToolUseBlocks
                                 has_tool_use = any(
                                     isinstance(block, ToolUseBlock) 
                                     for block in message.content
                                 )
                                 
-                                # Check if message contains API errors
-                                has_api_error = any(
-                                    isinstance(block, TextBlock) and 
-                                    ("API Error" in block.text or "529" in block.text or '"type":"error"' in block.text)
-                                    for block in message.content
-                                )
-                                
-                                log(f"AssistantMessage has {len(message.content)} blocks, has_tool_use={has_tool_use}, has_api_error={has_api_error}")
-                                
                                 # Skip sending if message contains ToolUseBlocks (handled by PreToolUse hook)
                                 if has_tool_use:
-                                    log("Skipping AssistantMessage with ToolUseBlocks (handled by PreToolUse hook)")
                                     continue
                                 
                                 # Format and send the message
@@ -331,10 +375,12 @@ class ButabotApp:
                                 # If we have a thinking message timestamp, update it; otherwise send new message
                                 if thinking_ts and not response_sent:
                                     # Update the thinking message with the actual response
-                                    log(f"Updating thinking message (ts={thinking_ts})")
+                                    text_content = self._extract_text_from_blocks(formatted_blocks)
+                                    log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=response")
                                     await self.slack_client.chat_update(
                                         channel=channel_id,
                                         ts=thinking_ts,
+                                        text=text_content,
                                         blocks=formatted_blocks,
                                         thread_ts=thread_ts,
                                         unfurl_links=False,
@@ -343,37 +389,44 @@ class ButabotApp:
                                     response_sent = True
                                 else:
                                     # Send as new message
-                                    log("Sending new message")
-                                    await say(
+                                    text_content = self._extract_text_from_blocks(formatted_blocks)
+                                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=response")
+                                    response = await say(
+                                        text=text_content,
                                         blocks=formatted_blocks,
                                         thread_ts=thread_ts,
                                         unfurl_links=False,
                                         unfurl_media=False
                                     )
+                                    if response and isinstance(response, dict):
+                                        response_ts = response.get("ts")
+                                        if response_ts:
+                                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=response")
                                     response_sent = True
                         
-                        log(f"App finished iterating over send_message(). Total messages: {message_count}")
                     except StopAsyncIteration:
-                        log(f"StopAsyncIteration in app after {message_count} messages - iteration completed", level="INFO")
+                        # Normal completion
+                        pass
                     except Exception as iter_error:
-                        log(f"Exception during send_message() iteration in app after {message_count} messages: {iter_error}", level="ERROR")
+                        log_error(f"Exception during send_message() iteration: {iter_error}")
                         import traceback
                         traceback.print_exc(file=sys.stderr)
                         sys.stderr.flush()
                         raise
                     
-                    log(f"Finished processing {message_count} messages, response_sent={response_sent}")
-                    
                     # If no response was sent (shouldn't happen, but handle gracefully)
                     if not response_sent and thinking_ts:
-                        log("No response sent, updating thinking message with completion notice")
+                        completion_blocks = [{
+                            "type": "markdown",
+                            "text": "✅ Processing complete. (No text response, but tools may have been executed.)"
+                        }]
+                        text_content = self._extract_text_from_blocks(completion_blocks)
+                        log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=completion")
                         await self.slack_client.chat_update(
                             channel=channel_id,
                             ts=thinking_ts,
-                            blocks=[{
-                                "type": "markdown",
-                                "text": "✅ Processing complete. (No text response, but tools may have been executed.)"
-                            }],
+                            text=text_content,
+                            blocks=completion_blocks,
                             thread_ts=thread_ts,
                             unfurl_links=False,
                             unfurl_media=False
@@ -388,9 +441,12 @@ class ButabotApp:
                     # Update thinking message with error, or send new message if update fails
                     if thinking_ts:
                         try:
+                            text_content = self._extract_text_from_blocks(error_blocks)
+                            log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=error")
                             await self.slack_client.chat_update(
                                 channel=channel_id,
                                 ts=thinking_ts,
+                                text=text_content,
                                 blocks=error_blocks,
                                 thread_ts=thread_ts,
                                 unfurl_links=False,
@@ -398,28 +454,42 @@ class ButabotApp:
                             )
                         except Exception:
                             # Fallback: send as new message
-                            await say(
+                            text_content = self._extract_text_from_blocks(error_blocks)
+                            log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
+                            response = await say(
+                                text=text_content,
                                 blocks=error_blocks,
                                 thread_ts=thread_ts,
                                 unfurl_links=False,
                                 unfurl_media=False
                             )
+                            if response and isinstance(response, dict):
+                                response_ts = response.get("ts")
+                                if response_ts:
+                                    log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
                     else:
-                        await say(
+                        text_content = self._extract_text_from_blocks(error_blocks)
+                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
+                        response = await say(
+                            text=text_content,
                             blocks=error_blocks,
                             thread_ts=thread_ts,
                             unfurl_links=False,
                             unfurl_media=False
                         )
+                        if response and isinstance(response, dict):
+                            response_ts = response.get("ts")
+                            if response_ts:
+                                log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
                     
-                    # Log error with flush to ensure it appears in Docker logs
-                    log(f"Error handling message: {e}", level="ERROR")
+                    # Log error
+                    log_error(f"Error handling message: {e}")
                     import traceback
                     traceback.print_exc(file=sys.stderr)
                     sys.stderr.flush()
             except Exception as outer_e:
                 # Catch any errors in the outer try block
-                log(f"Outer error in handle_app_mention: {outer_e}", level="ERROR")
+                log_error(f"Outer error in handle_app_mention: {outer_e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 sys.stderr.flush()
@@ -432,6 +502,17 @@ class ButabotApp:
             
             # Get approval details before handling response (which may trigger cleanup)
             approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
+            
+            # Log Slack event with tool information
+            message = body.get("message", {})
+            event_ts = message.get("ts")
+            thread_ts = message.get("thread_ts")
+            tool_name = approval_data.get("tool_name", "unknown") if approval_data else "unknown"
+            tool_use_id = approval_data.get("tool_use_id", "") if approval_data else ""
+            additional_info = f"tool={tool_name}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            log_slack_event(event_type="tool_approve", event_ts=event_ts, thread_ts=thread_ts, additional_info=additional_info)
             
             # Handle the approval response
             self.tool_approval_manager.handle_approval_response(approval_id, approved=True)
@@ -472,10 +553,16 @@ class ButabotApp:
                 ]
             
             # Update the original approval request message
+            tool_name = approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'
+            tool_use_id = approval_data.get('tool_use_id', '') if approval_data else ''
+            additional_info = f"type=approval | tool={tool_name}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=message_ts, additional_info=additional_info)
             await self.slack_client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
-                text=f"Tool approved: {approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'}",
+                text=f"Tool approved: {tool_name}",
                 blocks=approval_blocks,
                 unfurl_links=False,
                 unfurl_media=False
@@ -489,6 +576,17 @@ class ButabotApp:
             
             # Get approval details before handling response (which may trigger cleanup)
             approval_data = self.tool_approval_manager.get_pending_approval(approval_id)
+            
+            # Log Slack event with tool information
+            message = body.get("message", {})
+            event_ts = message.get("ts")
+            thread_ts = message.get("thread_ts")
+            tool_name = approval_data.get("tool_name", "unknown") if approval_data else "unknown"
+            tool_use_id = approval_data.get("tool_use_id", "") if approval_data else ""
+            additional_info = f"tool={tool_name}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            log_slack_event(event_type="tool_deny", event_ts=event_ts, thread_ts=thread_ts, additional_info=additional_info)
             
             # Handle the denial response
             self.tool_approval_manager.handle_approval_response(approval_id, approved=False)
@@ -541,6 +639,10 @@ class ButabotApp:
         @self.app.event("message")
         async def handle_message(event: Dict[str, Any]):
             """Handle regular messages (for debugging)."""
+            # Log incoming Slack event
+            event_ts = event.get("ts")
+            log_slack_event(event_type="message", event_ts=event_ts)
+            
             # Only process if bot is mentioned
             if "bot_id" in event:
                 return  # Ignore bot messages

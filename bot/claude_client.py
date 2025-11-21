@@ -19,11 +19,16 @@ from claude_agent_sdk import (
 )
 
 from .session_manager import SessionManager
-
-
-def log(message: str, level: str = "INFO"):
-    """Log message with flush to ensure it appears in Docker logs."""
-    print(f"[{level}] ClaudeClient: {message}", file=sys.stderr, flush=True)
+from .logger import (
+    log_tools_startup,
+    log_session_created,
+    log_pre_tool_use,
+    log_post_tool_use,
+    log_agent_message,
+    log_send_to_agent,
+    log_info,
+    log_error,
+)
 
 
 class ClaudeClient:
@@ -51,6 +56,7 @@ class ClaudeClient:
         self._clients: Dict[str, ClaudeSDKClient] = {}  # thread_id -> client
         self._feedback_callbacks: Dict[str, Callable[[str, str], Any]] = {}  # thread_id -> callback
         self._channel_ids: Dict[str, str] = {}  # thread_id -> channel_id
+        self._tools_logged = False  # Track if we've logged tool count on startup
         
         # Use .mcp.json from project root - let SDK handle parsing
         # According to docs, configure MCP servers in .mcp.json at project root
@@ -62,18 +68,23 @@ class ClaudeClient:
         # Enable filesystem tools (Read, Write, Edit, Glob, Grep) for Drupal development
         # Restrict agent's working directory to /app/data for security
         # Agent can access any folders mounted in docker-compose.yml
+        disallowed_tools = [
+            # Keep Bash disabled for security (enable if you need Drush/Composer commands)
+            # Note: Drupal MCP server can handle Drupal operations without Bash
+            "Bash", "BashOutput", "KillBash",
+            # Keep other dev tools disabled
+            "Task", "TodoWrite", "NotebookEdit", "ExitPlanMode",
+            # Filesystem tools (Read, Write, Edit, Glob, Grep) are now ENABLED
+        ]
+        
         self.base_options = ClaudeAgentOptions(
             mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
             cwd="/app/data",  # Agent's working directory
-            disallowed_tools=[
-                # Keep Bash disabled for security (enable if you need Drush/Composer commands)
-                # Note: Drupal MCP server can handle Drupal operations without Bash
-                "Bash", "BashOutput", "KillBash",
-                # Keep other dev tools disabled
-                "Task", "TodoWrite", "NotebookEdit", "ExitPlanMode",
-                # Filesystem tools (Read, Write, Edit, Glob, Grep) are now ENABLED
-            ],
+            disallowed_tools=disallowed_tools,
         )
+        
+        # Store disallowed_tools for logging when tool count is available
+        self._disallowed_tools = disallowed_tools
     
     def set_feedback_callback(self, thread_id: str, callback: Callable[[str, str], Any]):
         """
@@ -131,6 +142,10 @@ class ClaudeClient:
             client = ClaudeSDKClient(options=options)
             await client.connect()
             self._clients[thread_id] = client
+            
+            # Log session creation - we'll get session_id from first ResultMessage
+            # For now, log that a client was created
+            log_info(f"New agent client created for thread | thread_ts={thread_id}")
         
         return self._clients[thread_id]
     
@@ -146,6 +161,9 @@ class ClaudeClient:
             """Hook that requests approval before tool execution."""
             tool_name = input_data.get("tool_name", "unknown")
             tool_input = input_data.get("tool_input", {})
+            
+            # Log PreToolUse hook invocation
+            log_pre_tool_use(tool_name=tool_name, thread_ts=thread_id, tool_use_id=tool_use_id)
             
             # Request approval if approval_manager is available
             decision = "allow"  # Default to allow if no approval manager
@@ -174,7 +192,7 @@ class ClaudeClient:
                             # Clean up approval data if denied
                             self.approval_manager._cleanup_approval(approval_id)
                     except Exception as e:
-                        print(f"Error requesting tool approval: {e}")
+                        log_error(f"Error requesting tool approval: {e}")
                         # On error, deny by default for safety
                         decision = "deny"
                         decision_reason = f"Error requesting approval: {str(e)}"
@@ -193,6 +211,11 @@ class ClaudeClient:
             context: HookContext
         ) -> Dict[str, Any]:
             """Hook that updates approval message after tool execution."""
+            tool_name = input_data.get("tool_name", "unknown")
+            
+            # Log PostToolUse hook invocation
+            log_post_tool_use(tool_name=tool_name, thread_ts=thread_id, tool_use_id=tool_use_id)
+            
             # Update the approval message instead of sending a new one
             if self.approval_manager and tool_use_id:
                 tool_result = input_data.get("tool_result", {})
@@ -205,7 +228,7 @@ class ClaudeClient:
                         is_error=is_error
                     )
                 except Exception as e:
-                    print(f"Error updating approval message with result: {e}")
+                    log_error(f"Error updating approval message with result: {e}")
             
             return {}
         
@@ -254,123 +277,84 @@ class ClaudeClient:
             Messages from Claude (AssistantMessage, ToolUseBlock, etc.)
         """
         try:
-            log(f"Sending message to Claude for thread {thread_id}")
-            
             # Get or create client (SDK maintains session automatically)
             client = await self._get_or_create_client(thread_id)
-            log(f"Got/created client for thread {thread_id}")
+            
+            # Log sending message to agent
+            message_preview = user_message[:100] + "..." if len(user_message) > 100 else user_message
+            log_send_to_agent(
+                thread_ts=thread_id,
+                message_preview=message_preview,
+                message_length=len(user_message)
+            )
             
             # Send message
-            log(f"Calling client.query() with message: {user_message[:100]}")
             await client.query(user_message)
-            log("client.query() completed, starting to receive response")
             
             # Stream responses and extract session_id from ResultMessage
-            message_count = 0
             try:
-                log("Starting to iterate over receive_response()")
                 async for message in client.receive_response():
-                    message_count += 1
-                    message_type = type(message).__name__
-                    log(f"Received message #{message_count}: {message_type}")
-                    
-                    # Log SystemMessage details
+                    # Log SystemMessage to capture tool count on startup
                     if isinstance(message, SystemMessage):
                         subtype = getattr(message, 'subtype', 'unknown')
                         data = getattr(message, 'data', {})
-                        log(f"  SystemMessage subtype: {subtype}")
-                        log(f"  SystemMessage data keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                        if isinstance(data, dict):
-                            # Log important data fields
-                            for key in ['message', 'status', 'error', 'info', 'type']:
-                                if key in data:
-                                    log(f"  SystemMessage.{key}: {str(data[key])[:200]}")
-                            
-                            # Log MCP server status
-                            if 'mcp_servers' in data:
-                                mcp_servers = data['mcp_servers']
-                                log(f"  MCP Servers: {len(mcp_servers) if isinstance(mcp_servers, list) else 'N/A'} servers")
-                                if isinstance(mcp_servers, list):
-                                    for server in mcp_servers:
-                                        server_name = server.get('name', 'unknown')
-                                        server_status = server.get('status', 'unknown')
-                                        server_tools = server.get('tools', [])
-                                        server_error = server.get('error', None)
-                                        # Log all server fields for debugging
-                                        log(f"    - {server_name}: status={server_status}, tools={len(server_tools) if isinstance(server_tools, list) else 'N/A'}")
-                                        log(f"      Full server data: {json.dumps(server, indent=2, default=str)[:500]}")
-                                        if server_error:
-                                            log(f"      Error: {server_error}", level="ERROR")
-                                        if isinstance(server_tools, list) and server_tools:
-                                            tool_names = [t.get('name', 'unknown') if isinstance(t, dict) else str(t) for t in server_tools[:5]]
-                                            log(f"      Tools: {tool_names}")
-                            
-                            # Log available tools
-                            if 'tools' in data:
-                                tools = data.get('tools', [])
-                                log(f"  Available tools: {len(tools) if isinstance(tools, list) else 'N/A'} total")
-                                if isinstance(tools, list):
-                                    mcp_tools = [t for t in tools if isinstance(t, dict) and t.get('name', '').startswith('mcp__')]
-                                    log(f"    MCP tools: {len(mcp_tools)}")
-                                    if mcp_tools:
-                                        mcp_tool_names = [t.get('name', 'unknown') for t in mcp_tools[:10]]
-                                        log(f"    MCP tool names: {mcp_tool_names}")
-                            
-                            # Log full data if it's small enough
-                            if len(str(data)) < 500:
-                                log(f"  SystemMessage full data: {data}")
-                        # Check if SystemMessage indicates an error or completion
-                        if isinstance(data, dict):
-                            if data.get('status') == 'error' or data.get('error'):
-                                log(f"  ⚠️ SystemMessage indicates error - this may cause receive_response() to stop", level="WARNING")
-                            if data.get('status') == 'complete' or data.get('complete'):
-                                log(f"  ℹ️ SystemMessage indicates completion - receive_response() may stop", level="INFO")
+                        
+                        # Log tool count and disallowed tools on startup (first SystemMessage with tools)
+                        if isinstance(data, dict) and 'tools' in data and not self._tools_logged:
+                            tools = data.get('tools', [])
+                            if isinstance(tools, list):
+                                tool_count = len(tools)
+                                log_info(f"Tools available: {tool_count} total")
+                                # Log disallowed tools alongside tool count
+                                if self._disallowed_tools:
+                                    log_info(f"Disallowed tools: {', '.join(sorted(self._disallowed_tools))}")
+                                else:
+                                    log_info("Disallowed tools: none")
+                                self._tools_logged = True
+                        continue
                     
-                    # Extract session_id from ResultMessage (SDK provides this)
+                    # Extract session_id from ResultMessage and log session creation
                     if isinstance(message, ResultMessage):
                         session_id = message.session_id
                         # Store the SDK-provided session_id for potential future resume
                         self.session_manager.store_session(thread_id, session_id)
-                        log(f"  ResultMessage session_id: {session_id}")
-                        log(f"  ResultMessage duration_ms: {message.duration_ms}")
-                        log(f"  ResultMessage is_error: {message.is_error}")
-                        log(f"  ResultMessage num_turns: {message.num_turns}")
-                        log(f"  ResultMessage total_cost_usd: {message.total_cost_usd}")
-                        log(f"Stored session_id {session_id} for thread {thread_id}")
-                        # ResultMessage typically ends the iteration, but we'll continue to see if more messages come
-                        log("  ℹ️ ResultMessage received - receive_response() should continue until this message")
+                        # Log session creation
+                        log_session_created(session_id=session_id, thread_ts=thread_id)
+                        continue
                     
-                    # Log AssistantMessage details
+                    # Log AssistantMessage with response type and block types
                     if isinstance(message, AssistantMessage):
-                        log(f"  AssistantMessage model: {getattr(message, 'model', 'N/A')}")
-                        log(f"  AssistantMessage content blocks: {len(message.content)}")
-                        for i, block in enumerate(message.content):
-                            block_type = type(block).__name__
-                            log(f"    Block {i+1}: {block_type}")
+                        block_types = [type(block).__name__ for block in message.content]
+                        # Extract tool information if ToolUseBlock is present
+                        tool_name = None
+                        tool_use_id = None
+                        for block in message.content:
                             if isinstance(block, ToolUseBlock):
-                                log(f"      Tool: {block.name}, ID: {block.id}")
-                            elif isinstance(block, TextBlock):
-                                text_preview = block.text[:100] + "..." if len(block.text) > 100 else block.text
-                                log(f"      Text preview: {text_preview}")
+                                tool_name = block.name
+                                tool_use_id = block.id
+                                break  # Use first ToolUseBlock if multiple
+                        log_agent_message(
+                            message_type="AssistantMessage",
+                            block_types=block_types,
+                            thread_ts=thread_id,
+                            tool_name=tool_name,
+                            tool_use_id=tool_use_id
+                        )
                     
-                    log(f"Yielding message #{message_count} of type {message_type}")
                     yield message
-                    log(f"Successfully yielded message #{message_count}, waiting for next message...")
                 
-                log(f"receive_response() iteration completed. Total messages: {message_count}")
             except StopAsyncIteration:
-                log(f"StopAsyncIteration raised after {message_count} messages - this is normal when iteration completes", level="INFO")
+                # Normal completion
+                pass
             except Exception as iter_error:
-                log(f"Exception during receive_response() iteration after {message_count} messages: {iter_error}", level="ERROR")
+                log_error(f"Exception during receive_response() iteration: {iter_error}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 sys.stderr.flush()
                 raise
             
-            log(f"Finished streaming {message_count} messages for thread {thread_id}")
-            
         except Exception as e:
-            log(f"Error in send_message for thread {thread_id}: {e}", level="ERROR")
+            log_error(f"Error in send_message for thread {thread_id}: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
