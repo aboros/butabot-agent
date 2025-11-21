@@ -271,15 +271,20 @@ class ToolApprovalManager:
             additional_info = f"type=approval_result | tool={tool_name} | is_error={is_error}"
             if tool_use_id:
                 additional_info += f" | tool_use_id={tool_use_id}"
-            log_slack_api_call(method="chat_update", thread_ts=approval_data.get("thread_id"), ts=message_ts, additional_info=additional_info)
-            await self.slack_client.chat_update(
+            thread_id = approval_data.get("thread_id")
+            log_slack_api_call(method="chat_postMessage", thread_ts=thread_id, additional_info=additional_info)
+            response = await self.slack_client.chat_postMessage(
                 channel=channel_id,
-                ts=message_ts,
+                thread_ts=thread_id,
                 text=f"Tool {status_text}: {tool_name} - Results received",
                 blocks=blocks,
                 unfurl_links=False,
                 unfurl_media=False
             )
+            if response and isinstance(response, dict):
+                response_ts = response.get("ts")
+                if response_ts:
+                    log_slack_api_call(method="chat_postMessage", thread_ts=thread_id, ts=response_ts, additional_info=additional_info)
             # Clean up approval data after successful update
             if approval_id:
                 # Clean up tool_use_id mapping

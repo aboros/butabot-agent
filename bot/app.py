@@ -76,23 +76,31 @@ class ButabotApp:
         # FastMCP manages connection lifecycle via async with, so no explicit cleanup needed
         log_info("Shutdown complete")
     
-    def _create_feedback_callback(self, thread_ts: str, say: Callable) -> Callable[[str, str], Any]:
+    def _create_feedback_callback(self, thread_ts: str, say: Callable, channel_id: str, user_id: str) -> Callable[[str, str], Any]:
         """
-        Create a feedback callback function that uses say() to send messages.
+        Create a feedback callback function that uses say() with context blocks for tool-related messages.
         
         Args:
             thread_ts: Slack thread timestamp
             say: Slack say function
+            channel_id: Slack channel ID
+            user_id: Slack user ID (unused, kept for API compatibility)
             
         Returns:
             Async callback function that takes (thread_id, feedback_message)
         """
         async def feedback_callback(thread_id: str, feedback_message: str) -> None:
-            """Send feedback message to Slack."""
+            """Send feedback message to Slack using context blocks for compact display."""
             try:
+                # Use context block for compact, less intrusive display
                 feedback_blocks = [{
-                    "type": "markdown",
-                    "text": feedback_message
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": feedback_message
+                        }
+                    ]
                 }]
                 text_content = self._extract_text_from_blocks(feedback_blocks)
                 log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=feedback")
@@ -267,6 +275,7 @@ class ButabotApp:
                 
                 # Extract event data
                 channel_id = event.get("channel")
+                user_id = event.get("user")  # User ID for ephemeral messages
                 thread_ts = event.get("thread_ts") or event.get("ts")  # Use thread_ts if in thread, else ts
                 
                 # Get bot user ID
@@ -298,14 +307,14 @@ class ButabotApp:
                             log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=hello")
                     return
                 
-                # Create feedback callback for this thread
-                feedback_callback = self._create_feedback_callback(thread_ts, say)
+                # Create feedback callback for this thread (with user_id for ephemeral messages)
+                feedback_callback = self._create_feedback_callback(thread_ts, say, channel_id, user_id)
                 
                 # Set feedback callback and channel_id for this thread on the main client
                 self.claude_client.set_feedback_callback(thread_ts, feedback_callback)
                 self.claude_client.set_channel_id(thread_ts, channel_id)
                 
-                # Send "thinking" message and store its timestamp for updates
+                # Send "thinking" message
                 thinking_blocks = [{
                     "type": "markdown",
                     "text": "🤔 Thinking..."
@@ -319,9 +328,10 @@ class ButabotApp:
                     unfurl_links=False,
                     unfurl_media=False
                 )
-                thinking_ts = thinking_response.get("ts") if thinking_response else None
-                if thinking_ts:
-                    log_slack_api_call(method="say", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=thinking")
+                if thinking_response and isinstance(thinking_response, dict):
+                    thinking_ts = thinking_response.get("ts")
+                    if thinking_ts:
+                        log_slack_api_call(method="say", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=thinking")
                 
                 try:
                     response_sent = False
@@ -356,30 +366,64 @@ class ButabotApp:
                                     for block in content
                                 )
                                 
-                                # Skip sending if message contains tool_use blocks (handled by approval workflow)
+                                # Format and send messages - handle both text and tool_use blocks
                                 if has_tool_use:
-                                    continue
-                                
-                                # Format and send the message
-                                formatted_blocks = self._format_assistant_message(message)
-                                
-                                # If we have a thinking message timestamp, update it; otherwise send new message
-                                if thinking_ts and not response_sent:
-                                    # Update the thinking message with the actual response
-                                    text_content = self._extract_text_from_blocks(formatted_blocks)
-                                    log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=response")
-                                    await self.slack_client.chat_update(
-                                        channel=channel_id,
-                                        ts=thinking_ts,
-                                        text=text_content,
-                                        blocks=formatted_blocks,
-                                        thread_ts=thread_ts,
-                                        unfurl_links=False,
-                                        unfurl_media=False
-                                    )
-                                    response_sent = True
+                                    # Collect tool information
+                                    tool_names = []
+                                    for block in content:
+                                        if block.get("type") == "tool_use":
+                                            tool_name = block.get("name", "unknown")
+                                            tool_names.append(tool_name)
+                                    
+                                    # Also include any text blocks before tool_use
+                                    text_blocks = [
+                                        block.get("text", "")
+                                        for block in content
+                                        if block.get("type") == "text"
+                                    ]
+                                    
+                                    if text_blocks:
+                                        # Send text content first
+                                        text_content = "\n".join(text_blocks)
+                                        text_formatted_blocks = [{
+                                            "type": "markdown",
+                                            "text": text_content
+                                        }]
+                                        text_content_plain = self._extract_text_from_blocks(text_formatted_blocks)
+                                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=response")
+                                        await say(
+                                            text=text_content_plain,
+                                            blocks=text_formatted_blocks,
+                                            thread_ts=thread_ts,
+                                            unfurl_links=False,
+                                            unfurl_media=False
+                                        )
+                                        response_sent = True
+                                    
+                                    # Send tool_use information using compact context block
+                                    if tool_names:
+                                        tool_message = f"🔧 Calling {len(tool_names)} tool(s): {', '.join(tool_names)}"
+                                        tool_context_blocks = [{
+                                            "type": "context",
+                                            "elements": [
+                                                {
+                                                    "type": "mrkdwn",
+                                                    "text": tool_message
+                                                }
+                                            ]
+                                        }]
+                                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info=f"type=tool_use | tools={','.join(tool_names)}")
+                                        await say(
+                                            text=tool_message,
+                                            blocks=tool_context_blocks,
+                                            thread_ts=thread_ts,
+                                            unfurl_links=False,
+                                            unfurl_media=False
+                                        )
+                                        response_sent = True
                                 else:
-                                    # Send as new message
+                                    # No tool_use blocks - send normal message
+                                    formatted_blocks = self._format_assistant_message(message)
                                     text_content = self._extract_text_from_blocks(formatted_blocks)
                                     log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=response")
                                     response = await say(
@@ -406,64 +450,16 @@ class ButabotApp:
                         raise
                     
                     # If no response was sent (shouldn't happen, but handle gracefully)
-                    if not response_sent and thinking_ts:
+                    if not response_sent:
                         completion_blocks = [{
                             "type": "markdown",
                             "text": "✅ Processing complete. (No text response, but tools may have been executed.)"
                         }]
                         text_content = self._extract_text_from_blocks(completion_blocks)
-                        log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=completion")
-                        await self.slack_client.chat_update(
-                            channel=channel_id,
-                            ts=thinking_ts,
-                            text=text_content,
-                            blocks=completion_blocks,
-                            thread_ts=thread_ts,
-                            unfurl_links=False,
-                            unfurl_media=False
-                        )
-                    
-                except Exception as e:
-                    error_msg = f"❌ *Error:* {str(e)}"
-                    error_blocks = [{
-                        "type": "markdown",
-                        "text": error_msg
-                    }]
-                    # Update thinking message with error, or send new message if update fails
-                    if thinking_ts:
-                        try:
-                            text_content = self._extract_text_from_blocks(error_blocks)
-                            log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=error")
-                            await self.slack_client.chat_update(
-                                channel=channel_id,
-                                ts=thinking_ts,
-                                text=text_content,
-                                blocks=error_blocks,
-                                thread_ts=thread_ts,
-                                unfurl_links=False,
-                                unfurl_media=False
-                            )
-                        except Exception:
-                            # Fallback: send as new message
-                            text_content = self._extract_text_from_blocks(error_blocks)
-                            log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
-                            response = await say(
-                                text=text_content,
-                                blocks=error_blocks,
-                                thread_ts=thread_ts,
-                                unfurl_links=False,
-                                unfurl_media=False
-                            )
-                            if response and isinstance(response, dict):
-                                response_ts = response.get("ts")
-                                if response_ts:
-                                    log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
-                    else:
-                        text_content = self._extract_text_from_blocks(error_blocks)
-                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
+                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=completion")
                         response = await say(
                             text=text_content,
-                            blocks=error_blocks,
+                            blocks=completion_blocks,
                             thread_ts=thread_ts,
                             unfurl_links=False,
                             unfurl_media=False
@@ -471,7 +467,28 @@ class ButabotApp:
                         if response and isinstance(response, dict):
                             response_ts = response.get("ts")
                             if response_ts:
-                                log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
+                                log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=completion")
+                    
+                except Exception as e:
+                    error_msg = f"❌ *Error:* {str(e)}"
+                    error_blocks = [{
+                        "type": "markdown",
+                        "text": error_msg
+                    }]
+                    # Send error as new message
+                    text_content = self._extract_text_from_blocks(error_blocks)
+                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
+                    response = await say(
+                        text=text_content,
+                        blocks=error_blocks,
+                        thread_ts=thread_ts,
+                        unfurl_links=False,
+                        unfurl_media=False
+                    )
+                    if response and isinstance(response, dict):
+                        response_ts = response.get("ts")
+                        if response_ts:
+                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
                     
                     # Log error
                     log_error(f"Error handling message: {e}")
@@ -543,21 +560,26 @@ class ButabotApp:
                     }
                 ]
             
-            # Update the original approval request message
+            # Send approval confirmation as new message
             tool_name = approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'
             tool_use_id = approval_data.get('tool_use_id', '') if approval_data else ''
             additional_info = f"type=approval | tool={tool_name}"
             if tool_use_id:
                 additional_info += f" | tool_use_id={tool_use_id}"
-            log_slack_api_call(method="chat_update", thread_ts=thread_ts, ts=message_ts, additional_info=additional_info)
-            await self.slack_client.chat_update(
+            text_content = self._extract_text_from_blocks(approval_blocks)
+            log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, additional_info=additional_info)
+            response = await self.slack_client.chat_postMessage(
                 channel=channel_id,
-                ts=message_ts,
+                thread_ts=thread_ts,
                 text=f"Tool approved: {tool_name}",
                 blocks=approval_blocks,
                 unfurl_links=False,
                 unfurl_media=False
             )
+            if response and isinstance(response, dict):
+                response_ts = response.get("ts")
+                if response_ts:
+                    log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, ts=response_ts, additional_info=additional_info)
         
         @self.app.action("tool_deny")
         async def handle_tool_deny(ack, body: Dict[str, Any]):
@@ -617,15 +639,26 @@ class ButabotApp:
                     }
                 ]
             
-            # Update the original approval request message
-            await self.slack_client.chat_update(
+            # Send denial confirmation as new message
+            tool_name = approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'
+            tool_use_id = approval_data.get('tool_use_id', '') if approval_data else ''
+            additional_info = f"type=denial | tool={tool_name}"
+            if tool_use_id:
+                additional_info += f" | tool_use_id={tool_use_id}"
+            text_content = self._extract_text_from_blocks(denial_blocks)
+            log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, additional_info=additional_info)
+            response = await self.slack_client.chat_postMessage(
                 channel=channel_id,
-                ts=message_ts,
-                text=f"Tool denied: {approval_data.get('tool_name', 'unknown') if approval_data else 'unknown'}",
+                thread_ts=thread_ts,
+                text=f"Tool denied: {tool_name}",
                 blocks=denial_blocks,
                 unfurl_links=False,
                 unfurl_media=False
             )
+            if response and isinstance(response, dict):
+                response_ts = response.get("ts")
+                if response_ts:
+                    log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, ts=response_ts, additional_info=additional_info)
         
         @self.app.event("message")
         async def handle_message(event: Dict[str, Any]):

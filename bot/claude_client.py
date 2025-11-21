@@ -282,9 +282,12 @@ class ClaudeClient:
         Returns:
             Tuple of (approved, result) where result is tool output or denial message
         """
-        # Request approval
+        # Check if tool approvals are disabled via environment variable
+        disable_approvals = os.getenv("DISABLE_TOOL_APPROVALS", "").lower() in ("true", "1", "yes")
+        
+        # Request approval (unless disabled)
         approved = True
-        if self.approval_manager:
+        if self.approval_manager and not disable_approvals:
             channel_id = self._channel_ids.get(thread_id)
             if channel_id:
                 try:
@@ -301,6 +304,11 @@ class ClaudeClient:
                 except Exception as e:
                     log_error(f"Error requesting tool approval: {e}")
                     approved = False
+        elif disable_approvals:
+            # Approvals disabled - log what would have happened but proceed with execution
+            log_info(f"[APPROVALS DISABLED] Would request approval for tool: {tool_name} (tool_use_id: {tool_use_id})")
+            log_info(f"[APPROVALS DISABLED] Tool input: {tool_input}")
+            approved = True  # Auto-approve when disabled
         
         if not approved:
             return False, "Tool execution denied by user"
@@ -308,6 +316,15 @@ class ClaudeClient:
         # Execute tool via MCP client
         try:
             log_info(f"Executing tool: {tool_name} with input: {tool_input}")
+            
+            # Send feedback about tool execution starting
+            feedback_callback = self._feedback_callbacks.get(thread_id)
+            if feedback_callback:
+                try:
+                    await feedback_callback(thread_id, f"⚙️ Executing tool `{tool_name}`...")
+                except Exception as e:
+                    log_error(f"Error sending tool execution feedback: {e}")
+            
             result = await self.mcp_client.call_tool(tool_name, tool_input)
             
             # Check if result is an error dict (returned when raise_on_error=False)
@@ -321,13 +338,34 @@ class ClaudeClient:
             if not is_error:
                 log_info(f"Tool {tool_name} executed successfully. Result type: {type(result)}")
             
-            # Update approval message with result
-            if self.approval_manager:
+            # Format tool result for display
+            if isinstance(result, str):
+                result_preview = result[:500] + "..." if len(result) > 500 else result
+            elif isinstance(result, (dict, list)):
+                result_str = json.dumps(result, indent=2)
+                result_preview = result_str[:500] + "..." if len(result_str) > 500 else result_str
+            else:
+                result_preview = str(result)[:500] + ("..." if len(str(result)) > 500 else "")
+            
+            # Send tool result to Slack via feedback callback
+            if feedback_callback:
+                try:
+                    status_emoji = "✅" if not is_error else "❌"
+                    result_message = f"{status_emoji} *Tool `{tool_name}` completed*\n\n*Result:*\n```\n{result_preview}\n```"
+                    await feedback_callback(thread_id, result_message)
+                except Exception as e:
+                    log_error(f"Error sending tool result feedback: {e}")
+            
+            # Update approval message with result (only if approvals are enabled)
+            disable_approvals = os.getenv("DISABLE_TOOL_APPROVALS", "").lower() in ("true", "1", "yes")
+            if self.approval_manager and not disable_approvals:
                 await self.approval_manager.update_approval_message_with_result(
                     tool_use_id=tool_use_id,
                     tool_result=result,
                     is_error=is_error
                 )
+            elif disable_approvals:
+                log_info(f"[APPROVALS DISABLED] Tool {tool_name} completed. Result: {str(result)[:200]}...")
             
             return True, result
             
@@ -339,13 +377,25 @@ class ClaudeClient:
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
             
-            # Update approval message with error
-            if self.approval_manager:
+            # Send error feedback to Slack
+            feedback_callback = self._feedback_callbacks.get(thread_id)
+            if feedback_callback:
+                try:
+                    error_feedback = f"❌ *Tool `{tool_name}` failed*\n\n*Error:*\n```\n{error_msg}\n```"
+                    await feedback_callback(thread_id, error_feedback)
+                except Exception as feedback_error:
+                    log_error(f"Error sending tool error feedback: {feedback_error}")
+            
+            # Update approval message with error (only if approvals are enabled)
+            disable_approvals = os.getenv("DISABLE_TOOL_APPROVALS", "").lower() in ("true", "1", "yes")
+            if self.approval_manager and not disable_approvals:
                 await self.approval_manager.update_approval_message_with_result(
                     tool_use_id=tool_use_id,
                     tool_result=error_msg,
                     is_error=True
                 )
+            elif disable_approvals:
+                log_info(f"[APPROVALS DISABLED] Tool {tool_name} failed with error: {error_msg}")
             
             return True, error_msg  # Return error as result (Claude will handle it)
     
