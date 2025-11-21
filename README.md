@@ -63,9 +63,6 @@ DRUPAL_AUTH_USER=your-drupal-username
 DRUPAL_AUTH_PASSWORD=your-drupal-password
 DRUPAL_BASE_URL=http://your-site.ddev.site
 
-# GitLab MCP Server Configuration (optional)
-GITLAB_PROJECT_ID=your-project-id-or-path  # Automatically injected into all GitLab tool calls
-
 # Server Configuration
 PORT=3000
 ```
@@ -397,7 +394,6 @@ sudo usermod -aG docker $USER
 | `DRUPAL_AUTH_USER` | Drupal username for MCP server authentication | No (required if using Drupal MCP) |
 | `DRUPAL_AUTH_PASSWORD` | Drupal password for MCP server authentication | No (required if using Drupal MCP) |
 | `DRUPAL_BASE_URL` | Drupal site URL (e.g., http://site.ddev.site) | No (required if using Drupal MCP) |
-| `GITLAB_PROJECT_ID` | GitLab project ID or path (e.g., `12345` or `namespace/project-name`) | No (if set, automatically injected into all GitLab tool calls, overriding any provided project_id) |
 | `PORT` | HTTP server port (for health checks) | No (default: `3000`) |
 
 ## MCP Server Configuration
