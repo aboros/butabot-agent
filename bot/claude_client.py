@@ -1,6 +1,7 @@
 """Claude client wrapper for thread-aware conversations."""
 
 import json
+import os
 import sys
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
@@ -57,6 +58,11 @@ class ClaudeClient:
         self._feedback_callbacks: Dict[str, Callable[[str, str], Any]] = {}  # thread_id -> callback
         self._channel_ids: Dict[str, str] = {}  # thread_id -> channel_id
         self._tools_logged = False  # Track if we've logged tool count on startup
+        
+        # Read GitLab project ID from environment variable
+        self.gitlab_project_id = os.getenv("GITLAB_PROJECT_ID")
+        if not self.gitlab_project_id:
+            log_info("GITLAB_PROJECT_ID not set - GitLab tools will require project_id in each call")
         
         # Use .mcp.json from project root - let SDK handle parsing
         # According to docs, configure MCP servers in .mcp.json at project root
@@ -160,7 +166,11 @@ class ClaudeClient:
         ) -> Dict[str, Any]:
             """Hook that requests approval before tool execution."""
             tool_name = input_data.get("tool_name", "unknown")
-            tool_input = input_data.get("tool_input", {})
+            tool_input = input_data.get("tool_input", {}).copy()  # Copy to avoid mutation
+            
+            # Inject GitLab project_id for all GitLab MCP tools
+            if tool_name.startswith("mcp__gitlab__") and self.gitlab_project_id:
+                tool_input["project_id"] = self.gitlab_project_id
             
             # Log PreToolUse hook invocation
             log_pre_tool_use(tool_name=tool_name, thread_ts=thread_id, tool_use_id=tool_use_id)
@@ -197,12 +207,19 @@ class ClaudeClient:
                         decision = "deny"
                         decision_reason = f"Error requesting approval: {str(e)}"
             
+            # Build hook response with updatedInput if GitLab tool
+            hook_output = {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": decision_reason,
+            }
+            
+            # Include updatedInput if we modified tool_input (GitLab tools)
+            if tool_name.startswith("mcp__gitlab__") and self.gitlab_project_id:
+                hook_output["updatedInput"] = tool_input
+            
             return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": decision_reason,
-                }
+                "hookSpecificOutput": hook_output
             }
         
         async def post_tool_use_hook(
