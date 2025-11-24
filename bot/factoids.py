@@ -33,7 +33,7 @@ class FactoidManager:
                 factoids_file = docker_path  # Will try to load, handle error gracefully
         
         self.factoids_file = factoids_file
-        self._factoids: Dict[str, Dict[str, Any]] = {}  # trigger -> {response, mention_only}
+        self._factoids: Dict[str, Dict[str, Any]] = {}  # trigger -> {responses, mention_only}
         self._cooldowns: Dict[str, float] = {}  # trigger -> last trigger timestamp
         
         # Load factoids on initialization
@@ -144,15 +144,32 @@ class FactoidManager:
         Returns:
             Response text if factoid matches and cooldown allows, None otherwise
         """
-        # Decode HTML entities (Slack may encode special characters like ? as &quest;)
-        normalized_text = html.unescape(message_text)
+        # Normalize message text: decode HTML entities and strip whitespace
+        # Slack may encode special characters like ? as &quest;
+        normalized_text = html.unescape(message_text).strip()
+        message_text_stripped = message_text.strip()
         
-        # Check for exact match (try both original and normalized text)
+        # Check for exact match - try multiple combinations
+        # This handles cases where JSON key is "mivan?" but Slack sends it encoded differently
         trigger = None
-        if message_text in self._factoids:
-            trigger = message_text
+        
+        # First, try direct lookups with stripped text (fastest path)
+        if message_text_stripped in self._factoids:
+            trigger = message_text_stripped
         elif normalized_text in self._factoids:
             trigger = normalized_text
+        else:
+            # Check normalized versions of factoid keys against message text
+            # This handles cases where JSON has "mivan?" but Slack sends it as "mivan&quest;" or vice versa
+            for factoid_key in self._factoids.keys():
+                normalized_key = html.unescape(factoid_key).strip()
+                # Check all combinations: message (original/normalized/stripped) vs factoid key (original/normalized/stripped)
+                if (message_text_stripped == factoid_key or 
+                    message_text_stripped == normalized_key or
+                    normalized_text == factoid_key or
+                    normalized_text == normalized_key):
+                    trigger = factoid_key
+                    break
         
         if trigger is None:
             return None
