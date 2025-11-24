@@ -2,10 +2,9 @@
   "botsnack": {
     "response": "Nyamm, nyamm! 🍎",
     "mention_only": false
-  }
+  },
   "mivan?": {
     "response": "*MITMIVAN?!*",
     "mention_only": false
   }
 }
-
