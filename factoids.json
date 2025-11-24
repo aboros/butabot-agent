@@ -1,6 +1,10 @@
 {
   "botsnack": {
-    "response": "Nyamm, nyamm! 🍎",
+    "response": [
+      "Nyamm, nyamm! 🍎",
+      "Ezért szeretek ide járni! 🍪",
+      "Hámmmm, hámmm 🍕"
+    ],
     "mention_only": false
   },
   "mivan?": {

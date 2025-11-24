@@ -1,6 +1,8 @@
 """Factoid manager for handling simple string-triggered responses."""
 
+import html
 import json
+import random
 import time
 from pathlib import Path
 from typing import Dict, Optional, Any
@@ -70,8 +72,21 @@ class FactoidManager:
                 response = config.get("response")
                 mention_only = config.get("mention_only", False)
                 
-                if not isinstance(response, str):
-                    errors.append(f"Invalid response for '{trigger}': not a string")
+                # Support both single string and array of strings for responses
+                if isinstance(response, str):
+                    # Single response - convert to list for consistent handling
+                    responses = [response]
+                elif isinstance(response, list):
+                    # Multiple responses - validate all are strings
+                    if not all(isinstance(r, str) for r in response):
+                        errors.append(f"Invalid response for '{trigger}': array contains non-string values")
+                        continue
+                    if len(response) == 0:
+                        errors.append(f"Invalid response for '{trigger}': empty array")
+                        continue
+                    responses = response
+                else:
+                    errors.append(f"Invalid response for '{trigger}': must be a string or array of strings")
                     continue
                 
                 if not isinstance(mention_only, bool):
@@ -79,7 +94,7 @@ class FactoidManager:
                     continue
                 
                 loaded_factoids[trigger] = {
-                    "response": response,
+                    "responses": responses,  # Store as list for consistent handling
                     "mention_only": mention_only
                 }
             
@@ -129,25 +144,39 @@ class FactoidManager:
         Returns:
             Response text if factoid matches and cooldown allows, None otherwise
         """
-        # Check for exact match
-        if message_text not in self._factoids:
+        # Decode HTML entities (Slack may encode special characters like ? as &quest;)
+        normalized_text = html.unescape(message_text)
+        
+        # Check for exact match (try both original and normalized text)
+        trigger = None
+        if message_text in self._factoids:
+            trigger = message_text
+        elif normalized_text in self._factoids:
+            trigger = normalized_text
+        
+        if trigger is None:
             return None
         
-        factoid = self._factoids[message_text]
+        factoid = self._factoids[trigger]
         
         # Check mention_only requirement
         if factoid["mention_only"] and not is_mention:
             return None
         
-        # Check cooldown
-        if self._is_on_cooldown(message_text):
-            log_factoid_cooldown(message_text)
+        # Check cooldown (use trigger key for cooldown tracking)
+        if self._is_on_cooldown(trigger):
+            log_factoid_cooldown(trigger)
             return None
         
-        # Record trigger
-        self._record_trigger(message_text)
+        # Record trigger (use trigger key for cooldown tracking)
+        self._record_trigger(trigger)
         
-        return factoid["response"]
+        # Select random response if multiple available
+        responses = factoid["responses"]
+        if len(responses) == 1:
+            return responses[0]
+        else:
+            return random.choice(responses)
     
     def _is_on_cooldown(self, trigger: str) -> bool:
         """

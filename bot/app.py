@@ -280,13 +280,14 @@ class ButabotApp:
                 # Extract event data
                 channel_id = event.get("channel")
                 user_id = event.get("user")  # User ID for ephemeral messages
-                thread_ts = event.get("thread_ts") or event.get("ts")  # Use thread_ts if in thread, else ts
+                # Only use thread_ts if message is actually in a thread (don't create new threads)
+                thread_ts = event.get("thread_ts")  # None if not in a thread
                 
                 # Get bot user ID
                 auth_response = await self.slack_client.auth_test()
                 bot_user_id = auth_response.get("user_id", "")
                 
-                # Remove bot mention from message
+                # Remove bot mention from message (preserve exact text for factoid matching)
                 user_message = event.get("text", "")
                 if f"<@{bot_user_id}>" in user_message:
                     user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
@@ -301,7 +302,7 @@ class ButabotApp:
                     response = await say(
                         text=text_content,
                         blocks=hello_blocks,
-                        thread_ts=thread_ts,
+                        thread_ts=thread_ts,  # None if not in thread, which posts to channel
                         unfurl_links=False,
                         unfurl_media=False
                     )
@@ -324,7 +325,7 @@ class ButabotApp:
                     response = await say(
                         text=text_content,
                         blocks=factoid_blocks,
-                        thread_ts=thread_ts,
+                        thread_ts=thread_ts,  # None if not in thread, which posts to channel without creating thread
                         unfurl_links=False,
                         unfurl_media=False
                     )
@@ -704,7 +705,8 @@ class ButabotApp:
                 return  # Skip empty messages
             
             channel_id = event.get("channel")
-            thread_ts = event.get("thread_ts") or event.get("ts")
+            # Only use thread_ts if message is actually in a thread (don't create new threads)
+            thread_ts = event.get("thread_ts")  # None if not in a thread
             
             # Check for factoids (not a mention, so is_mention=False)
             factoid_response = self.factoid_manager.check_factoid(message_text, is_mention=False)
@@ -717,14 +719,17 @@ class ButabotApp:
                 text_content = self._extract_text_from_blocks(factoid_blocks)
                 log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, additional_info="type=factoid")
                 try:
-                    response = await self.slack_client.chat_postMessage(
-                        channel=channel_id,
-                        thread_ts=thread_ts,
-                        text=text_content,
-                        blocks=factoid_blocks,
-                        unfurl_links=False,
-                        unfurl_media=False
-                    )
+                    # Only include thread_ts if it exists (None means post to channel without creating thread)
+                    post_kwargs = {
+                        "channel": channel_id,
+                        "text": text_content,
+                        "blocks": factoid_blocks,
+                        "unfurl_links": False,
+                        "unfurl_media": False
+                    }
+                    if thread_ts:
+                        post_kwargs["thread_ts"] = thread_ts
+                    response = await self.slack_client.chat_postMessage(**post_kwargs)
                     if response and isinstance(response, dict):
                         response_ts = response.get("ts")
                         if response_ts:

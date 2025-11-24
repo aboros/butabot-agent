@@ -8,12 +8,20 @@
     "mention_only": true
   },
   "ping": {
-    "response": "pong",
+    "response": ["pong", "pong!", "🏓"],
     "mention_only": false
   },
   "help": {
     "response": "I'm a Slack bot powered by Claude. Mention me to ask questions or use tools!",
     "mention_only": true
+  },
+  "botsnack": {
+    "response": [
+      "Nyamm, nyamm! 🍎",
+      "Yum! Thanks for the snack! 🍪",
+      "Delicious! *nom nom* 🍕"
+    ],
+    "mention_only": false
   }
 }
 

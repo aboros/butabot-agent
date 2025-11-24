@@ -176,6 +176,7 @@ The bot supports factoids - simple responses triggered by exact string matches i
 - Each factoid can be configured to trigger only on bot mentions or on any message
 - Global 30-second cooldown per trigger string (prevents spam)
 - Factoids do not trigger Claude processing - they respond immediately
+- Multiple responses per trigger are supported - the bot randomly selects one each time
 
 **Configuration:**
 
@@ -187,6 +188,10 @@ Create `factoids.json` in the project root (copy from `factoids.json.example`):
     "response": "Hi there! How can I help you?",
     "mention_only": false
   },
+  "ping": {
+    "response": ["pong", "pong!", "🏓"],
+    "mention_only": false
+  },
   "status": {
     "response": "All systems operational! ✅",
     "mention_only": true
@@ -195,7 +200,9 @@ Create `factoids.json` in the project root (copy from `factoids.json.example`):
 ```
 
 **Factoid Properties:**
-- `response`: The text response to send when triggered
+- `response`: The text response to send when triggered. Can be:
+  - A single string: `"response": "Hello!"`
+  - An array of strings: `"response": ["Hello!", "Hi there!", "Hey!"]` - bot randomly selects one each time
 - `mention_only`: If `true`, factoid only triggers when bot is mentioned. If `false`, triggers on any message containing the exact string
 
 **Cooldown Behavior:**
