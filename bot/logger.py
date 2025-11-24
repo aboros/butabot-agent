@@ -97,3 +97,32 @@ def log_send_to_agent(thread_ts: str, message_preview: Optional[str] = None, mes
         info_parts.append(f"preview={message_preview}")
     log_info(" | ".join(info_parts))
 
+
+def log_factoid_trigger(trigger: str, thread_ts: Optional[str] = None, mention_only: bool = False):
+    """Log when a factoid is triggered."""
+    info_parts = [f"Factoid triggered | trigger={trigger}"]
+    if thread_ts:
+        info_parts.append(f"thread_ts={thread_ts}")
+    if mention_only:
+        info_parts.append("mention_only=true")
+    log_info(" | ".join(info_parts))
+
+
+def log_factoid_cooldown(trigger: str):
+    """Log when a factoid is blocked by cooldown."""
+    log_info(f"Factoid blocked by cooldown | trigger={trigger}")
+
+
+def log_factoid_reload(success: bool, factoid_count: int = 0, error: Optional[str] = None):
+    """Log factoid reload attempts."""
+    if success:
+        info_parts = [f"Factoids reloaded | count={factoid_count}"]
+        if error:
+            info_parts.append(f"warnings={error}")
+        log_info(" | ".join(info_parts))
+    else:
+        error_parts = [f"Factoid reload failed | count={factoid_count}"]
+        if error:
+            error_parts.append(f"error={error}")
+        log_error(" | ".join(error_parts))
+

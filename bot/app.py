@@ -17,6 +17,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from .claude_client import ClaudeClient
 from .session_manager import SessionManager
 from .tool_approval import ToolApprovalManager
+from .factoids import FactoidManager
 from .logger import (
     log_slack_event,
     log_agent_message,
@@ -24,6 +25,8 @@ from .logger import (
     log_info,
     log_error,
     log_warning,
+    log_factoid_trigger,
+    log_factoid_cooldown,
 )
 
 
@@ -46,6 +49,7 @@ class ButabotApp:
         self.session_manager = SessionManager()
         self.slack_client = AsyncWebClient(token=os.getenv("SLACK_BOT_TOKEN"))
         self.tool_approval_manager = ToolApprovalManager(self.slack_client)
+        self.factoid_manager = FactoidManager()
         
         # Initialize Claude client (feedback callback will be set per message)
         self.claude_client = ClaudeClient(
@@ -306,6 +310,29 @@ class ButabotApp:
                         if response_ts:
                             log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=hello")
                     return
+                
+                # Check for factoids before Claude processing
+                factoid_response = self.factoid_manager.check_factoid(user_message, is_mention=True)
+                if factoid_response is not None:
+                    log_factoid_trigger(user_message, thread_ts=thread_ts, mention_only=True)
+                    factoid_blocks = [{
+                        "type": "markdown",
+                        "text": factoid_response
+                    }]
+                    text_content = self._extract_text_from_blocks(factoid_blocks)
+                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=factoid")
+                    response = await say(
+                        text=text_content,
+                        blocks=factoid_blocks,
+                        thread_ts=thread_ts,
+                        unfurl_links=False,
+                        unfurl_media=False
+                    )
+                    if response and isinstance(response, dict):
+                        response_ts = response.get("ts")
+                        if response_ts:
+                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=factoid")
+                    return  # Skip Claude processing
                 
                 # Create feedback callback for this thread (with user_id for ephemeral messages)
                 feedback_callback = self._create_feedback_callback(thread_ts, say, channel_id, user_id)
@@ -662,7 +689,7 @@ class ButabotApp:
         
         @self.app.event("message")
         async def handle_message(event: Dict[str, Any]):
-            """Handle regular messages (for debugging)."""
+            """Handle regular messages (check for factoids)."""
             # Log incoming Slack event
             event_ts = event.get("ts")
             log_slack_event(event_type="message", event_ts=event_ts)
@@ -670,6 +697,40 @@ class ButabotApp:
             # Only process if bot is mentioned
             if "bot_id" in event:
                 return  # Ignore bot messages
+            
+            # Extract message text and event data
+            message_text = event.get("text", "").strip()
+            if not message_text:
+                return  # Skip empty messages
+            
+            channel_id = event.get("channel")
+            thread_ts = event.get("thread_ts") or event.get("ts")
+            
+            # Check for factoids (not a mention, so is_mention=False)
+            factoid_response = self.factoid_manager.check_factoid(message_text, is_mention=False)
+            if factoid_response is not None:
+                log_factoid_trigger(message_text, thread_ts=thread_ts, mention_only=False)
+                factoid_blocks = [{
+                    "type": "markdown",
+                    "text": factoid_response
+                }]
+                text_content = self._extract_text_from_blocks(factoid_blocks)
+                log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, additional_info="type=factoid")
+                try:
+                    response = await self.slack_client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=thread_ts,
+                        text=text_content,
+                        blocks=factoid_blocks,
+                        unfurl_links=False,
+                        unfurl_media=False
+                    )
+                    if response and isinstance(response, dict):
+                        response_ts = response.get("ts")
+                        if response_ts:
+                            log_slack_api_call(method="chat_postMessage", thread_ts=thread_ts, ts=response_ts, additional_info="type=factoid")
+                except Exception as e:
+                    log_error(f"Error posting factoid response: {e}")
         
         # Health check endpoint (for HTTP mode)
         # Note: This requires HTTP adapter, not Socket Mode

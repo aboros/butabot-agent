@@ -1,0 +1,19 @@
+{
+  "hello": {
+    "response": "Hi there! How can I help you?",
+    "mention_only": false
+  },
+  "status": {
+    "response": "All systems operational! ✅",
+    "mention_only": true
+  },
+  "ping": {
+    "response": "pong",
+    "mention_only": false
+  },
+  "help": {
+    "response": "I'm a Slack bot powered by Claude. Mention me to ask questions or use tools!",
+    "mention_only": true
+  }
+}
+

@@ -32,6 +32,7 @@ services:
       
       # Mount configuration files (read-only)
       - ./.mcp.json:/app/.mcp.json:ro
+      - ./factoids.json:/app/factoids.json:ro
       - ./requirements.txt:/app/requirements.txt:ro
       
       # Mount Python code for development (changes reflected immediately)

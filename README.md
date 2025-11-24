@@ -167,6 +167,53 @@ When Claude wants to use a tool:
 3. Tool execution proceeds or is blocked accordingly
 4. Approval requests timeout after 5 minutes (default)
 
+### Factoids
+
+The bot supports factoids - simple responses triggered by exact string matches in messages. Factoids are configured via a JSON file and can be reloaded at runtime.
+
+**How Factoids Work:**
+- Factoids respond to exact string matches (case-sensitive)
+- Each factoid can be configured to trigger only on bot mentions or on any message
+- Global 30-second cooldown per trigger string (prevents spam)
+- Factoids do not trigger Claude processing - they respond immediately
+
+**Configuration:**
+
+Create `factoids.json` in the project root (copy from `factoids.json.example`):
+
+```json
+{
+  "hello": {
+    "response": "Hi there! How can I help you?",
+    "mention_only": false
+  },
+  "status": {
+    "response": "All systems operational! ✅",
+    "mention_only": true
+  }
+}
+```
+
+**Factoid Properties:**
+- `response`: The text response to send when triggered
+- `mention_only`: If `true`, factoid only triggers when bot is mentioned. If `false`, triggers on any message containing the exact string
+
+**Cooldown Behavior:**
+- Each trigger string has a global 30-second cooldown across all channels and threads
+- If a factoid is triggered, the same trigger string cannot fire again anywhere in the workspace for 30 seconds
+- Cooldowns are tracked per trigger string, not per factoid response
+
+**Runtime Reloading:**
+- Factoids can be reloaded at runtime by calling `factoid_manager.reload_factoids()`
+- File watching or admin commands can be added later to trigger reloads automatically
+- If the JSON file has errors, the bot logs errors but continues with existing factoids
+
+**Integration:**
+- Factoid checks happen before Claude processing
+- If a factoid matches, the bot responds immediately and skips Claude API calls
+- Factoid responses use the same Block Kit formatting as Claude responses
+- Factoids work in channels, DMs, and threads - anywhere the bot is present
+
 ### Available Tools
 
 The bot uses MCP servers for all tools. Configure tools via `.mcp.json`:
