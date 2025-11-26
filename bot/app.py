@@ -62,7 +62,7 @@ class ButabotApp:
         self._register_handlers()
     
     async def initialize_mcp_servers(self):
-        """Discover MCP tools at startup (FastMCP manages connections per operation)."""
+        """Discover MCP tools at startup and open persistent connections."""
         log_info("Discovering MCP tools...")
         try:
             await self.claude_client.mcp_client.initialize()
@@ -76,8 +76,13 @@ class ButabotApp:
             # Don't fail startup - bot can still work without MCP tools
     
     async def shutdown(self):
-        """Cleanup resources on shutdown (no-op since FastMCP manages connections)."""
-        # FastMCP manages connection lifecycle via async with, so no explicit cleanup needed
+        """Cleanup resources on shutdown."""
+        # Close MCP client connections (closes STDIO server processes)
+        try:
+            await self.claude_client.mcp_client.close()
+        except Exception as e:
+            log_error(f"Error closing MCP client: {e}")
+        
         log_info("Shutdown complete")
     
     def _create_feedback_callback(self, thread_ts: str, say: Callable, channel_id: str, user_id: str) -> Callable[[str, str], Any]:

@@ -22,9 +22,12 @@ class MCPClientWrapper:
     - Schema conversion (MCP → Anthropic format)
     - Tool caching (avoid re-discovery on every API call)
     - File loading convenience
+    - Persistent connections for STDIO servers (better performance and state management)
     
-    Note: FastMCP manages connection lifecycle - we use async with for each operation
-    to ensure Docker-based STDIO servers work correctly.
+    Connection Lifecycle:
+    - Connection is opened during initialize() and kept open for application lifetime
+    - Connection is closed during close() on application shutdown
+    - This pattern is essential for STDIO servers to avoid spawning new processes per operation
     """
     
     def __init__(self, mcp_config_path: Path):
@@ -37,6 +40,8 @@ class MCPClientWrapper:
         self.mcp_client: Optional[Client] = None
         self._tools: List[Dict[str, Any]] = []
         self._initialized = False
+        self._connection_open = False
+        self._roots: List[str] = []
         
         # Load config immediately (synchronous, no I/O in __init__)
         if mcp_config_path.exists():
@@ -46,6 +51,9 @@ class MCPClientWrapper:
                 self._config = self._substitute_env_vars(raw_config)
         else:
             self._config = {"mcpServers": {}}
+        
+        # Extract filesystem roots from config
+        self._roots = self._extract_filesystem_roots()
     
     def _substitute_env_vars(self, obj: Any) -> Any:
         """
@@ -79,23 +87,62 @@ class MCPClientWrapper:
         else:
             return obj
     
+    def _extract_filesystem_roots(self) -> List[str]:
+        """
+        Extract filesystem root paths from MCP config and convert to file:// URLs.
+        
+        Looks for filesystem server configuration and extracts directory paths
+        from its args. Converts paths to file:// URLs as required by FastMCP.
+        Defaults to file:///app/data if not found.
+        
+        Returns:
+            List of file:// URLs for filesystem operations
+        """
+        try:
+            mcp_servers = self._config.get("mcpServers", {})
+            filesystem_server = mcp_servers.get("filesystem", {})
+            args = filesystem_server.get("args", [])
+            
+            # Look for arguments that look like directory paths (start with /)
+            roots = []
+            for arg in args:
+                if isinstance(arg, str) and arg.startswith("/"):
+                    # Convert path to file:// URL format
+                    # file:///path/to/dir (note: three slashes for absolute paths)
+                    roots.append(f"file://{arg}")
+            
+            if roots:
+                return roots
+        except Exception as e:
+            print(f"[WARNING] Failed to extract filesystem roots from config: {e}", file=sys.stderr)
+            sys.stderr.flush()
+        
+        # Default to file:///app/data if extraction fails or no roots found
+        return ["file:///app/data"]
+    
     async def initialize(self):
         """
         Initialize FastMCP client and discover tools.
         
-        Uses async with to let FastMCP manage connection lifecycle properly.
-        This is especially important for Docker-based STDIO servers.
+        Opens a persistent connection that remains open for the application lifetime.
+        This is essential for STDIO servers to avoid spawning new processes per operation,
+        which improves performance and maintains server state.
+        
         FastMCP Client handles all multi-server complexity automatically.
         """
-        if self._initialized:
+        if self._initialized and self._connection_open:
             return
         
         # FastMCP Client handles all multi-server configuration
-        self.mcp_client = Client(self._config)
+        # Pass roots to configure filesystem server access
+        self.mcp_client = Client(self._config, roots=self._roots if self._roots else None)
         
-        # Use async with to discover tools - let FastMCP manage the connection
-        # This ensures Docker-based STDIO servers work correctly
-        async with self.mcp_client:
+        # Open connection and keep it open (persistent connection pattern)
+        # This is critical for STDIO servers - avoids spawning new processes per operation
+        try:
+            await self.mcp_client.__aenter__()
+            self._connection_open = True
+            
             # Discover tools from all servers (FastMCP handles this)
             tools = await self.mcp_client.list_tools()
             # Convert FastMCP tool objects to dicts for caching
@@ -107,18 +154,29 @@ class MCPClientWrapper:
                 }
                 for tool in tools
             ]
-        
-        print(f"[INFO] MCP client initialized with {len(self._tools)} tools", file=sys.stderr)
-        sys.stderr.flush()
-        
-        self._initialized = True
+            
+            print(f"[INFO] MCP client initialized with {len(self._tools)} tools", file=sys.stderr)
+            if self._roots:
+                print(f"[INFO] Filesystem roots configured: {self._roots}", file=sys.stderr)
+            sys.stderr.flush()
+            
+            self._initialized = True
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize MCP client: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            self._connection_open = False
+            # Don't raise - bot can work without MCP tools
     
     async def call_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Any:
         """
-        Execute tool via FastMCP.
+        Execute tool via FastMCP using persistent connection.
         
-        Uses async with for each tool call to let FastMCP manage connection lifecycle.
-        This ensures Docker-based STDIO servers work correctly.
+        Uses the persistent connection opened during initialize().
+        This avoids spawning new STDIO processes per operation, improving performance
+        and maintaining server state across tool calls.
+        
         FastMCP automatically handles server name prefixes and routing.
         
         Args:
@@ -128,91 +186,92 @@ class MCPClientWrapper:
         Returns:
             Tool execution result
         """
-        if not self._initialized:
+        # Ensure connection is open
+        if not self._initialized or not self._connection_open:
             await self.initialize()
         
-        # Ensure mcp_client is created
-        if self.mcp_client is None:
-            self.mcp_client = Client(self._config)
+        # Ensure mcp_client exists and connection is open
+        if self.mcp_client is None or not self._connection_open:
+            print(f"[ERROR] MCP client not initialized or connection not open", file=sys.stderr)
+            sys.stderr.flush()
+            return {"error": True, "message": "MCP client not initialized"}
         
         try:
             print(f"[INFO] Calling MCP tool: {tool_name} with input: {tool_input}", file=sys.stderr)
             sys.stderr.flush()
             
-            # Use async with for each tool call - let FastMCP manage connection lifecycle
-            # This is especially important for Docker-based STDIO servers
-            async with self.mcp_client:
-                # Use named parameters as per FastMCP API
-                # Use raise_on_error=False to get structured error results instead of exceptions
-                result = await self.mcp_client.call_tool(
-                    name=tool_name, 
-                    arguments=tool_input,
-                    raise_on_error=False
-                )
-                print(f"[INFO] MCP tool {tool_name} returned result: {type(result)}", file=sys.stderr)
-                print(f"[INFO] Result has .data: {hasattr(result, 'data')}, .data value: {getattr(result, 'data', None)}", file=sys.stderr)
-                print(f"[INFO] Result has .structured_content: {hasattr(result, 'structured_content')}, .structured_content value: {getattr(result, 'structured_content', None)}", file=sys.stderr)
-                print(f"[INFO] Result has .content: {hasattr(result, 'content')}, .content length: {len(getattr(result, 'content', []))}", file=sys.stderr)
-                sys.stderr.flush()
-                
-                # Check for errors first (using raise_on_error=False gives us error results)
-                if hasattr(result, "is_error") and result.is_error:
-                    error_msg = "Tool execution failed"
-                    if hasattr(result, "content") and result.content:
-                        # Extract error message from content blocks
-                        error_parts = []
-                        for block in result.content:
-                            if hasattr(block, "text"):
-                                error_parts.append(block.text)
-                        if error_parts:
-                            error_msg = " ".join(error_parts)
-                    elif hasattr(result, "structured_content") and result.structured_content:
-                        # Try to extract error from structured content
-                        error_msg = str(result.structured_content)
-                    
-                    print(f"[ERROR] MCP tool {tool_name} returned error: {error_msg}", file=sys.stderr)
-                    sys.stderr.flush()
-                    # Return error as result instead of raising - let Claude handle it
-                    return {"error": True, "message": error_msg}
-                
-                # FastMCP returns CallToolResult with .data, .structured_content, and .content
-                # For Drupal MCP tools, structured_content often has complete JSON data already
-                # Priority: structured_content (if available) > .data (with recursive conversion) > .content
-                if hasattr(result, "structured_content") and result.structured_content is not None:
-                    # structured_content is already proper JSON - use it directly
-                    print(f"[INFO] Using structured_content for {tool_name} (already JSON)", file=sys.stderr)
-                    sys.stderr.flush()
-                    return result.structured_content
-                elif hasattr(result, "data") and result.data is not None:
-                    # Fully hydrated Python objects (FastMCP exclusive)
-                    # Recursively convert Pydantic models and nested objects to plain Python types
-                    data = self._recursively_convert_pydantic(result.data)
-                    
-                    # Log the data type and preview for debugging
-                    print(f"[INFO] Extracted and converted result.data type: {type(data)}, preview: {str(data)[:200]}", file=sys.stderr)
-                    sys.stderr.flush()
-                    return data
-                elif hasattr(result, "content") and result.content:
-                    # Extract text from content blocks (list of TextContent, ImageContent, etc.)
-                    print(f"[INFO] Extracting text from content blocks for {tool_name}", file=sys.stderr)
-                    sys.stderr.flush()
-                    text_parts = []
+            # Use persistent connection (no async with - connection stays open)
+            # Use named parameters as per FastMCP API
+            # Use raise_on_error=False to get structured error results instead of exceptions
+            result = await self.mcp_client.call_tool(
+                name=tool_name, 
+                arguments=tool_input,
+                raise_on_error=False
+            )
+            print(f"[INFO] MCP tool {tool_name} returned result: {type(result)}", file=sys.stderr)
+            print(f"[INFO] Result has .data: {hasattr(result, 'data')}, .data value: {getattr(result, 'data', None)}", file=sys.stderr)
+            print(f"[INFO] Result has .structured_content: {hasattr(result, 'structured_content')}, .structured_content value: {getattr(result, 'structured_content', None)}", file=sys.stderr)
+            print(f"[INFO] Result has .content: {hasattr(result, 'content')}, .content length: {len(getattr(result, 'content', []))}", file=sys.stderr)
+            sys.stderr.flush()
+            
+            # Check for errors first (using raise_on_error=False gives us error results)
+            if hasattr(result, "is_error") and result.is_error:
+                error_msg = "Tool execution failed"
+                if hasattr(result, "content") and result.content:
+                    # Extract error message from content blocks
+                    error_parts = []
                     for block in result.content:
                         if hasattr(block, "text"):
-                            text_parts.append(block.text)
-                        elif hasattr(block, "data"):
-                            # Binary data - convert to string representation
-                            text_parts.append(f"<binary data: {len(block.data)} bytes>")
-                    if text_parts:
-                        return "\n".join(text_parts)
-                    else:
-                        # Empty content blocks
-                        return ""
+                            error_parts.append(block.text)
+                    if error_parts:
+                        error_msg = " ".join(error_parts)
+                elif hasattr(result, "structured_content") and result.structured_content:
+                    # Try to extract error from structured content
+                    error_msg = str(result.structured_content)
+                
+                print(f"[ERROR] MCP tool {tool_name} returned error: {error_msg}", file=sys.stderr)
+                sys.stderr.flush()
+                # Return error as result instead of raising - let Claude handle it
+                return {"error": True, "message": error_msg}
+            
+            # FastMCP returns CallToolResult with .data, .structured_content, and .content
+            # For Drupal MCP tools, structured_content often has complete JSON data already
+            # Priority: structured_content (if available) > .data (with recursive conversion) > .content
+            if hasattr(result, "structured_content") and result.structured_content is not None:
+                # structured_content is already proper JSON - use it directly
+                print(f"[INFO] Using structured_content for {tool_name} (already JSON)", file=sys.stderr)
+                sys.stderr.flush()
+                return result.structured_content
+            elif hasattr(result, "data") and result.data is not None:
+                # Fully hydrated Python objects (FastMCP exclusive)
+                # Recursively convert Pydantic models and nested objects to plain Python types
+                data = self._recursively_convert_pydantic(result.data)
+                
+                # Log the data type and preview for debugging
+                print(f"[INFO] Extracted and converted result.data type: {type(data)}, preview: {str(data)[:200]}", file=sys.stderr)
+                sys.stderr.flush()
+                return data
+            elif hasattr(result, "content") and result.content:
+                # Extract text from content blocks (list of TextContent, ImageContent, etc.)
+                print(f"[INFO] Extracting text from content blocks for {tool_name}", file=sys.stderr)
+                sys.stderr.flush()
+                text_parts = []
+                for block in result.content:
+                    if hasattr(block, "text"):
+                        text_parts.append(block.text)
+                    elif hasattr(block, "data"):
+                        # Binary data - convert to string representation
+                        text_parts.append(f"<binary data: {len(block.data)} bytes>")
+                if text_parts:
+                    return "\n".join(text_parts)
                 else:
-                    # Fallback: return result as-is (shouldn't happen with proper FastMCP)
-                    print(f"[WARNING] MCP tool {tool_name} returned unexpected result format", file=sys.stderr)
-                    sys.stderr.flush()
-                    return result
+                    # Empty content blocks
+                    return ""
+            else:
+                # Fallback: return result as-is (shouldn't happen with proper FastMCP)
+                print(f"[WARNING] MCP tool {tool_name} returned unexpected result format", file=sys.stderr)
+                sys.stderr.flush()
+                return result
         except Exception as e:
             # Log the error for debugging
             # Some errors (like validation errors) are still raised even with raise_on_error=False
@@ -313,20 +372,32 @@ class MCPClientWrapper:
     
     async def ensure_initialized(self):
         """
-        Ensure MCP client is initialized (idempotent).
+        Ensure MCP client is initialized and connection is open (idempotent).
         
-        Can be called multiple times safely.
+        Can be called multiple times safely. Ensures both initialization flag
+        and connection state are set.
         """
-        if not self._initialized:
+        if not self._initialized or not self._connection_open:
             await self.initialize()
     
     async def close(self):
         """
-        Cleanup method for shutdown (no-op since FastMCP manages connections).
+        Close MCP client connections on application shutdown.
         
-        FastMCP manages connection lifecycle automatically with async with,
-        so no explicit cleanup is needed.
+        Properly closes the persistent connection opened during initialize().
+        This is essential for clean shutdown of STDIO server processes.
         """
-        # No-op: FastMCP manages connections via async with context managers
-        pass
+        if self.mcp_client is not None and self._connection_open:
+            try:
+                await self.mcp_client.__aexit__(None, None, None)
+                self._connection_open = False
+                print(f"[INFO] MCP client connections closed", file=sys.stderr)
+                sys.stderr.flush()
+            except Exception as e:
+                print(f"[ERROR] Error closing MCP client connections: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
+                # Continue shutdown even if close fails
+                self._connection_open = False
 
