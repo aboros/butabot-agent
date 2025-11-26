@@ -9,11 +9,12 @@ alwaysApply: true
 ## Architecture Overview
 
 The bot uses a layered architecture:
-- **Slack Layer** (`bot/app.py`): Handles Slack events (`app_mention`), button interactions (`tool_approve`, `tool_deny`), message formatting, API error detection
+- **Slack Layer** (`bot/app.py`): Handles Slack events (`app_mention`), button interactions (`tool_approve`, `tool_deny`), message formatting, API error detection, factoid checking
 - **Claude Layer** (`bot/claude_client.py`): Wraps Anthropic Messages API for thread-aware conversations, manages conversation history, handles tool execution loop
 - **MCP Layer** (`bot/mcp_client.py`): FastMCP client wrapper for MCP server integration, tool discovery, and schema conversion
 - **Session Layer** (`bot/session_manager.py`): Maps Slack threads to conversation message history (in-memory storage)
 - **Approval Layer** (`bot/tool_approval.py`): Manages tool approval workflows via `ToolApprovalManager` class
+- **Factoid Layer** (`bot/factoids.py`): Manages simple string-triggered responses with cooldown tracking and random selection
 
 **Key Design Decisions:**
 - **Direct API usage**: Uses Anthropic Messages API directly (not Agent SDK) for full control
@@ -22,6 +23,7 @@ The bot uses a layered architecture:
 - **Tool approval**: All tool usage requires explicit user approval via Slack buttons
 - **Manual tool loop**: Implements tool execution loop manually (checking `stop_reason == "tool_use"`)
 - **Error handling**: API errors are detected and formatted as user-friendly Slack messages
+- **Factoids**: Simple responses triggered by exact string matches, checked before Claude processing
 
 ## Core Principles
 
@@ -298,7 +300,10 @@ except Exception as e:
 
 ### 7. Slack Event Handling
 
-- **Thread detection**: Always check for `thread_ts` first, fall back to `ts`
+- **Thread detection**: Different behavior for factoids vs Claude responses
+  - **Factoids**: Use `event.get("thread_ts")` only (never create threads)
+  - **Claude responses**: Use `event.get("thread_ts") or event.get("ts")` (create thread if needed)
+- **Factoid checking**: Check factoids before Claude processing, return early if matched
 - **Bot mention removal**: Remove bot user ID from message text before processing
 - **Thinking indicator**: Show "🤔 Thinking..." message immediately, update with response
 - **Message updates**: Use `chat_update()` to replace thinking message with response
@@ -308,18 +313,28 @@ except Exception as e:
 - **API error detection**: Detect and format API errors in text blocks before sending to Slack
 
 ```python
-# ✅ CORRECT: Thread detection
-thread_ts = event.get("thread_ts") or event.get("ts")
+# ✅ CORRECT: Thread detection for Claude responses (creates thread if needed)
+claude_thread_ts = event.get("thread_ts") or event.get("ts")
+
+# ✅ CORRECT: Thread detection for factoids (never creates threads)
+factoid_thread_ts = event.get("thread_ts")  # None if not in thread
 
 # ✅ CORRECT: Remove bot mention
 user_message = event.get("text", "")
 if f"<@{bot_user_id}>" in user_message:
     user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
 
-# ✅ CORRECT: Thinking indicator and update
+# ✅ CORRECT: Check factoids before Claude processing
+factoid_response = self.factoid_manager.check_factoid(user_message, is_mention=True)
+if factoid_response is not None:
+    # Send factoid response using factoid_thread_ts (no thread creation)
+    await say(blocks=factoid_blocks, thread_ts=factoid_thread_ts)
+    return  # Skip Claude processing
+
+# ✅ CORRECT: Thinking indicator and update (uses claude_thread_ts)
 thinking_response = await say(
     blocks=[{"type": "markdown", "text": "🤔 Thinking..."}],
-    thread_ts=thread_ts
+    thread_ts=claude_thread_ts  # Creates thread if needed
 )
 thinking_ts = thinking_response.get("ts")
 
@@ -328,7 +343,7 @@ await slack_client.chat_update(
     channel=channel_id,
     ts=thinking_ts,
     blocks=formatted_blocks,
-    thread_ts=thread_ts
+    thread_ts=claude_thread_ts
 )
 ```
 
@@ -336,13 +351,15 @@ await slack_client.chat_update(
 
 **Module responsibilities:**
 
-- **`bot/app.py`**: Slack Bolt app, event handlers (`app_mention`), button handlers (`tool_approve`, `tool_deny`), message formatting, API error detection
+- **`bot/app.py`**: Slack Bolt app, event handlers (`app_mention`, `message`), button handlers (`tool_approve`, `tool_deny`), message formatting, API error detection, factoid checking
 - **`bot/claude_client.py`**: Anthropic Messages API wrapper, conversation history management, tool execution loop, tool approval interception
 - **`bot/mcp_client.py`**: FastMCP client wrapper, MCP server initialization, tool discovery, schema conversion (MCP → Anthropic format)
 - **`bot/session_manager.py`**: Thread-to-message-history mapping, conversation storage (in-memory dict)
 - **`bot/tool_approval.py`**: Tool approval workflow (`ToolApprovalManager`), Slack interactions, approval request/response handling
+- **`bot/factoids.py`**: Factoid management (`FactoidManager`), string matching, cooldown tracking, random response selection
 - **`main.py`**: Entry point that calls `bot.app.main()`
 - **`.mcp.json`**: MCP server configuration file in project root (loaded by `MCPClientWrapper`)
+- **`factoids.json`**: Factoid configuration file in project root (loaded by `FactoidManager`)
 
 **Import patterns:**
 
@@ -444,6 +461,9 @@ async with self.mcp_client:
 - Forget to initialize MCP client before calling tools
 - Hardcode secrets in `.mcp.json` (use environment variables)
 - Use HTTPS for local DDEV sites (use HTTP to avoid SSL certificate issues)
+- Use same `thread_ts` for factoids and Claude responses (factoids use `event.get("thread_ts")` only, Claude uses `event.get("thread_ts") or event.get("ts")`)
+- Check factoids after Claude processing (check before, return early if matched)
+- Create threads for factoid responses (factoids should never create threads)
 
 **✅ DO:**
 - Store full conversation history per thread via `SessionManager.store_messages()`
@@ -460,6 +480,10 @@ async with self.mcp_client:
 - Mount Docker socket for STDIO MCP servers that use Docker binaries
 - Use HTTP (not HTTPS) for local DDEV sites to avoid SSL certificate issues
 - Verify Drupal user has "Use MCP server" permission when using Drupal MCP
+- Use separate `factoid_thread_ts` and `claude_thread_ts` variables for different thread handling
+- Check factoids before Claude processing and return early if matched
+- Use `factoid_thread_ts = event.get("thread_ts")` for factoid responses (no thread creation)
+- Use `claude_thread_ts = event.get("thread_ts") or event.get("ts")` for Claude responses (creates thread if needed)
 
 ### 13. Message Processing Patterns
 
@@ -716,6 +740,74 @@ await approval_manager.update_approval_message_with_result(
     tool_result={"results": [...]},
     is_error=False
 )
+```
+
+### Factoid Manager Usage
+
+**CRITICAL: Factoids are checked before Claude processing and use different thread handling.**
+
+- **Thread handling**: Factoids use `event.get("thread_ts")` only (never create threads)
+- **Claude responses**: Use `event.get("thread_ts") or event.get("ts")` (create thread if needed)
+- **Exact matching**: Factoids match exact strings (case-sensitive) with HTML entity decoding
+- **Cooldowns**: Global 30-second cooldown per trigger string
+- **Random selection**: Support multiple responses per trigger with random selection
+
+```python
+# ✅ CORRECT: Factoid checking pattern in handle_app_mention
+# Extract event data
+channel_id = event.get("channel")
+user_id = event.get("user")
+
+# For factoids: don't create threads
+factoid_thread_ts = event.get("thread_ts")  # None if not in thread
+
+# For Claude responses: create thread if needed
+claude_thread_ts = event.get("thread_ts") or event.get("ts")
+
+# Remove bot mention
+user_message = event.get("text", "")
+if f"<@{bot_user_id}>" in user_message:
+    user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
+
+# Check for factoids BEFORE Claude processing
+factoid_response = self.factoid_manager.check_factoid(user_message, is_mention=True)
+if factoid_response is not None:
+    # Send factoid response using factoid_thread_ts (no thread creation)
+    factoid_blocks = [{"type": "markdown", "text": factoid_response}]
+    await say(blocks=factoid_blocks, thread_ts=factoid_thread_ts)
+    return  # Skip Claude processing - factoid handled it
+
+# Continue with Claude processing using claude_thread_ts
+# ... Claude response handling ...
+```
+
+**Factoid Configuration (`factoids.json`):**
+
+```json
+{
+  "ping": {
+    "response": ["pong", "pong!", "🏓"],
+    "mention_only": false
+  },
+  "status": {
+    "response": "All systems operational! ✅",
+    "mention_only": true
+  }
+}
+```
+
+**FactoidManager Methods:**
+
+```python
+# Initialize factoid manager
+factoid_manager = FactoidManager()  # Loads from /app/factoids.json or ./factoids.json
+
+# Check if message matches a factoid
+response = factoid_manager.check_factoid(message_text, is_mention=True)
+# Returns response string if matched and cooldown allows, None otherwise
+
+# Reload factoids at runtime
+success = factoid_manager.reload_factoids()
 ```
 
 ### Docker Compose Commands

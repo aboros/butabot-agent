@@ -280,8 +280,12 @@ class ButabotApp:
                 # Extract event data
                 channel_id = event.get("channel")
                 user_id = event.get("user")  # User ID for ephemeral messages
-                # Only use thread_ts if message is actually in a thread (don't create new threads)
-                thread_ts = event.get("thread_ts")  # None if not in a thread
+                
+                # For factoids: don't create threads (use thread_ts only if it exists)
+                factoid_thread_ts = event.get("thread_ts")  # None if not in a thread
+                
+                # For Claude responses: create thread if needed (original behavior)
+                claude_thread_ts = event.get("thread_ts") or event.get("ts")  # Use thread_ts if in thread, else ts (creates thread)
                 
                 # Get bot user ID
                 auth_response = await self.slack_client.auth_test()
@@ -298,49 +302,49 @@ class ButabotApp:
                         "text": "Hello! How can I help you?"
                     }]
                     text_content = self._extract_text_from_blocks(hello_blocks)
-                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=hello")
+                    log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=hello")
                     response = await say(
                         text=text_content,
                         blocks=hello_blocks,
-                        thread_ts=thread_ts,  # None if not in thread, which posts to channel
+                        thread_ts=claude_thread_ts,  # Use Claude thread_ts (creates thread)
                         unfurl_links=False,
                         unfurl_media=False
                     )
                     if response and isinstance(response, dict):
                         response_ts = response.get("ts")
                         if response_ts:
-                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=hello")
+                            log_slack_api_call(method="say", thread_ts=claude_thread_ts, ts=response_ts, additional_info="type=hello")
                     return
                 
                 # Check for factoids before Claude processing
                 factoid_response = self.factoid_manager.check_factoid(user_message, is_mention=True)
                 if factoid_response is not None:
-                    log_factoid_trigger(user_message, thread_ts=thread_ts, mention_only=True)
+                    log_factoid_trigger(user_message, thread_ts=factoid_thread_ts, mention_only=True)
                     factoid_blocks = [{
                         "type": "markdown",
                         "text": factoid_response
                     }]
                     text_content = self._extract_text_from_blocks(factoid_blocks)
-                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=factoid")
+                    log_slack_api_call(method="say", thread_ts=factoid_thread_ts, additional_info="type=factoid")
                     response = await say(
                         text=text_content,
                         blocks=factoid_blocks,
-                        thread_ts=thread_ts,  # None if not in thread, which posts to channel without creating thread
+                        thread_ts=factoid_thread_ts,  # Use factoid thread_ts (no thread creation)
                         unfurl_links=False,
                         unfurl_media=False
                     )
                     if response and isinstance(response, dict):
                         response_ts = response.get("ts")
                         if response_ts:
-                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=factoid")
+                            log_slack_api_call(method="say", thread_ts=factoid_thread_ts, ts=response_ts, additional_info="type=factoid")
                     return  # Skip Claude processing
                 
                 # Create feedback callback for this thread (with user_id for ephemeral messages)
-                feedback_callback = self._create_feedback_callback(thread_ts, say, channel_id, user_id)
+                feedback_callback = self._create_feedback_callback(claude_thread_ts, say, channel_id, user_id)
                 
                 # Set feedback callback and channel_id for this thread on the main client
-                self.claude_client.set_feedback_callback(thread_ts, feedback_callback)
-                self.claude_client.set_channel_id(thread_ts, channel_id)
+                self.claude_client.set_feedback_callback(claude_thread_ts, feedback_callback)
+                self.claude_client.set_channel_id(claude_thread_ts, channel_id)
                 
                 # Send "thinking" message
                 thinking_blocks = [{
@@ -348,24 +352,24 @@ class ButabotApp:
                     "text": "🤔 Thinking..."
                 }]
                 text_content = self._extract_text_from_blocks(thinking_blocks)
-                log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=thinking")
+                log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=thinking")
                 thinking_response = await say(
                     text=text_content,
                     blocks=thinking_blocks,
-                    thread_ts=thread_ts,
+                    thread_ts=claude_thread_ts,  # Use Claude thread_ts (creates thread)
                     unfurl_links=False,
                     unfurl_media=False
                 )
                 if thinking_response and isinstance(thinking_response, dict):
                     thinking_ts = thinking_response.get("ts")
                     if thinking_ts:
-                        log_slack_api_call(method="say", thread_ts=thread_ts, ts=thinking_ts, additional_info="type=thinking")
+                        log_slack_api_call(method="say", thread_ts=claude_thread_ts, ts=thinking_ts, additional_info="type=thinking")
                 
                 try:
                     response_sent = False
                     # Stream responses and process assistant messages
                     try:
-                        async for message in self.claude_client.send_message(thread_ts, user_message):
+                        async for message in self.claude_client.send_message(claude_thread_ts, user_message):
                             # Handle assistant messages
                             if message.get("type") == "assistant":
                                 content = message.get("content", [])
@@ -383,7 +387,7 @@ class ButabotApp:
                                 log_agent_message(
                                     message_type="AssistantMessage",
                                     block_types=block_types,
-                                    thread_ts=thread_ts,
+                                    thread_ts=claude_thread_ts,
                                     tool_name=tool_name,
                                     tool_use_id=tool_use_id
                                 )
@@ -418,11 +422,11 @@ class ButabotApp:
                                             "text": text_content
                                         }]
                                         text_content_plain = self._extract_text_from_blocks(text_formatted_blocks)
-                                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=response")
+                                        log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=response")
                                         await say(
                                             text=text_content_plain,
                                             blocks=text_formatted_blocks,
-                                            thread_ts=thread_ts,
+                                            thread_ts=claude_thread_ts,
                                             unfurl_links=False,
                                             unfurl_media=False
                                         )
@@ -440,11 +444,11 @@ class ButabotApp:
                                                 }
                                             ]
                                         }]
-                                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info=f"type=tool_use | tools={','.join(tool_names)}")
+                                        log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info=f"type=tool_use | tools={','.join(tool_names)}")
                                         await say(
                                             text=tool_message,
                                             blocks=tool_context_blocks,
-                                            thread_ts=thread_ts,
+                                            thread_ts=claude_thread_ts,
                                             unfurl_links=False,
                                             unfurl_media=False
                                         )
@@ -453,18 +457,18 @@ class ButabotApp:
                                     # No tool_use blocks - send normal message
                                     formatted_blocks = self._format_assistant_message(message)
                                     text_content = self._extract_text_from_blocks(formatted_blocks)
-                                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=response")
+                                    log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=response")
                                     response = await say(
                                         text=text_content,
                                         blocks=formatted_blocks,
-                                        thread_ts=thread_ts,
+                                        thread_ts=claude_thread_ts,
                                         unfurl_links=False,
                                         unfurl_media=False
                                     )
                                     if response and isinstance(response, dict):
                                         response_ts = response.get("ts")
                                         if response_ts:
-                                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=response")
+                                            log_slack_api_call(method="say", thread_ts=claude_thread_ts, ts=response_ts, additional_info="type=response")
                                     response_sent = True
                         
                     except StopAsyncIteration:
@@ -484,18 +488,18 @@ class ButabotApp:
                             "text": "✅ Processing complete. (No text response, but tools may have been executed.)"
                         }]
                         text_content = self._extract_text_from_blocks(completion_blocks)
-                        log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=completion")
+                        log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=completion")
                         response = await say(
                             text=text_content,
                             blocks=completion_blocks,
-                            thread_ts=thread_ts,
+                            thread_ts=claude_thread_ts,
                             unfurl_links=False,
                             unfurl_media=False
                         )
                         if response and isinstance(response, dict):
                             response_ts = response.get("ts")
                             if response_ts:
-                                log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=completion")
+                                log_slack_api_call(method="say", thread_ts=claude_thread_ts, ts=response_ts, additional_info="type=completion")
                     
                 except Exception as e:
                     error_msg = f"❌ *Error:* {str(e)}"
@@ -505,18 +509,18 @@ class ButabotApp:
                     }]
                     # Send error as new message
                     text_content = self._extract_text_from_blocks(error_blocks)
-                    log_slack_api_call(method="say", thread_ts=thread_ts, additional_info="type=error")
+                    log_slack_api_call(method="say", thread_ts=claude_thread_ts, additional_info="type=error")
                     response = await say(
                         text=text_content,
                         blocks=error_blocks,
-                        thread_ts=thread_ts,
+                        thread_ts=claude_thread_ts,
                         unfurl_links=False,
                         unfurl_media=False
                     )
                     if response and isinstance(response, dict):
                         response_ts = response.get("ts")
                         if response_ts:
-                            log_slack_api_call(method="say", thread_ts=thread_ts, ts=response_ts, additional_info="type=error")
+                            log_slack_api_call(method="say", thread_ts=claude_thread_ts, ts=response_ts, additional_info="type=error")
                     
                     # Log error
                     log_error(f"Error handling message: {e}")

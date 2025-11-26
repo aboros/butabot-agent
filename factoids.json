@@ -10,5 +10,9 @@
   "mivan?": {
     "response": "*MITMIVAN?!*",
     "mention_only": false
+  },
+  "mire?": {
+    "response": "Mire háromig számolok! 2...",
+    "mention_only": false
   }
 }
