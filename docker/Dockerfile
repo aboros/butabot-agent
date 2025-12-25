@@ -37,6 +37,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only necessary application files (not entire project root)
 COPY bot/ ./bot/
+COPY mcp_nano_banana/ ./mcp_nano_banana/
 # .mcp.json already copied above, but copy again to ensure it's in final image
 COPY .mcp.json .
 

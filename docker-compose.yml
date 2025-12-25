@@ -37,6 +37,7 @@ services:
       
       # Mount Python code for development (changes reflected immediately)
       - ./bot:/app/bot:ro
+      - ./mcp_nano_banana:/app/mcp_nano_banana:ro
       
       # Mount Docker socket so bot can run Docker commands for STDIO MCP servers
       - /var/run/docker.sock:/var/run/docker.sock:ro

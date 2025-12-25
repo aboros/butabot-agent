@@ -1,11 +1,14 @@
 """Claude client wrapper for thread-aware conversations."""
 
+import base64
+import io
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
+import aiohttp
 from anthropic import AsyncAnthropic
 
 from .session_manager import SessionManager
@@ -338,6 +341,18 @@ class ClaudeClient:
             if not is_error:
                 log_info(f"Tool {tool_name} executed successfully. Result type: {type(result)}")
             
+            # Handle image generation results (post image directly to Slack)
+            if isinstance(result, dict) and "image_base64" in result and not is_error:
+                await self._post_image_to_slack(
+                    thread_id=thread_id,
+                    tool_name=tool_name,
+                    image_base64=result["image_base64"],
+                    mime_type=result.get("mime_type", "image/png"),
+                    prompt=result.get("prompt", "")
+                )
+                # Return a simple success message for Claude
+                result = "Image generated and posted to Slack successfully."
+            
             # Format tool result for display
             if isinstance(result, str):
                 result_preview = result[:500] + "..." if len(result) > 500 else result
@@ -398,6 +413,126 @@ class ClaudeClient:
                 log_info(f"[APPROVALS DISABLED] Tool {tool_name} failed with error: {error_msg}")
             
             return True, error_msg  # Return error as result (Claude will handle it)
+    
+    async def _post_image_to_slack(
+        self,
+        thread_id: str,
+        tool_name: str,
+        image_base64: str,
+        mime_type: str = "image/png",
+        prompt: str = ""
+    ) -> None:
+        """
+        Post an image to Slack using the new 3-step file upload API.
+        
+        Uses files.getUploadURLExternal -> POST to upload URL -> files.completeUploadExternal
+        as per https://docs.slack.dev/messaging/working-with-files#uploading_files
+        
+        Args:
+            thread_id: Slack thread timestamp
+            tool_name: Name of the tool that generated the image
+            image_base64: Base64-encoded image data
+            mime_type: MIME type of the image (default: "image/png")
+            prompt: Original prompt used to generate the image
+        """
+        if not self.approval_manager:
+            log_error("Cannot post image: approval_manager not available")
+            return
+        
+        channel_id = self._channel_ids.get(thread_id)
+        if not channel_id:
+            log_error(f"Cannot post image: channel_id not found for thread {thread_id}")
+            return
+        
+        slack_client = self.approval_manager.slack_client
+        
+        try:
+            # Decode base64 image data
+            image_bytes = base64.b64decode(image_base64)
+            file_length = len(image_bytes)
+            
+            # Determine file extension from MIME type
+            file_ext = "png"
+            if "jpeg" in mime_type or "jpg" in mime_type:
+                file_ext = "jpg"
+            elif "gif" in mime_type:
+                file_ext = "gif"
+            elif "webp" in mime_type:
+                file_ext = "webp"
+            
+            # Generate filename
+            filename = f"generated_image.{file_ext}"
+            if prompt:
+                # Create a sanitized filename from prompt (first 30 chars, alphanumeric only)
+                sanitized = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in prompt[:30])
+                filename = f"{sanitized}.{file_ext}"
+            
+            title = f"Generated image: {prompt[:100] if prompt else tool_name}"
+            initial_comment = f"🎨 Image generated using `{tool_name}`"
+            
+            log_info(f"Uploading image to Slack: {filename} ({file_length} bytes)")
+            
+            # Step 1: Get upload URL and file ID
+            upload_response = await slack_client.files_getUploadURLExternal(
+                filename=filename,
+                length=file_length,
+            )
+            
+            if not upload_response.get("ok"):
+                error = upload_response.get("error", "Unknown error")
+                raise Exception(f"Failed to get upload URL: {error}")
+            
+            upload_url = upload_response["upload_url"]
+            file_id = upload_response["file_id"]
+            
+            log_info(f"Got upload URL and file_id: {file_id}")
+            
+            # Step 2: Upload file content to the upload URL
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    upload_url,
+                    data=image_bytes,
+                    headers={"Content-Type": "application/octet-stream"},
+                ) as upload_resp:
+                    if upload_resp.status != 200:
+                        error_text = await upload_resp.text()
+                        raise Exception(f"Failed to upload file: HTTP {upload_resp.status} - {error_text}")
+                    
+                    upload_result = await upload_resp.text()
+                    log_info(f"File uploaded to URL: {upload_result}")
+            
+            # Step 3: Complete the upload and share to channel
+            complete_response = await slack_client.files_completeUploadExternal(
+                files=[{"id": file_id, "title": title}],
+                channel_id=channel_id,
+                initial_comment=initial_comment,
+                thread_ts=thread_id,
+            )
+            
+            if not complete_response.get("ok"):
+                error = complete_response.get("error", "Unknown error")
+                raise Exception(f"Failed to complete upload: {error}")
+            
+            # Log success
+            files = complete_response.get("files", [])
+            if files:
+                uploaded_file_id = files[0].get("id", file_id)
+                log_info(f"Image uploaded successfully to Slack: file_id={uploaded_file_id}")
+            else:
+                log_info(f"Image uploaded successfully to Slack: file_id={file_id}")
+                
+        except Exception as e:
+            log_error(f"Error uploading image to Slack: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            # Try to send error message via feedback
+            feedback_callback = self._feedback_callbacks.get(thread_id)
+            if feedback_callback:
+                try:
+                    await feedback_callback(thread_id, f"❌ Error uploading generated image to Slack: {str(e)}")
+                except Exception:
+                    pass
     
     async def get_text_response(self, thread_id: str, user_message: str) -> str:
         """
