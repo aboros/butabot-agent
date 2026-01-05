@@ -31,13 +31,20 @@ services:
       # - /any/path/on/host:/app/data/anywhere:rw
       
       # Mount configuration files (read-only)
-      - ./.mcp.json:/app/.mcp.json:ro
+      # Note: MCP configuration is now in config/fastagent.config.yaml (mounted via config/ volume)
       - ./factoids.json:/app/factoids.json:ro
       - ./requirements.txt:/app/requirements.txt:ro
       
       # Mount Python code for development (changes reflected immediately)
+      - ./agent:/app/agent:ro
+      - ./approval:/app/approval:ro
+      - ./config:/app/config:ro
+      - ./connectors:/app/connectors:ro
+      - ./core:/app/core:ro
       - ./bot:/app/bot:ro
       - ./mcp_nano_banana:/app/mcp_nano_banana:ro
+      - ./app_multi_platform.py:/app/app_multi_platform.py:ro
+      - ./test_agent.py:/app/test_agent.py:ro
       
       # Mount Docker socket so bot can run Docker commands for STDIO MCP servers
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -45,7 +52,7 @@ services:
       - "3000:3000"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python.*bot.app"]
+      test: ["CMD", "pgrep", "-f", "python.*app_multi_platform"]
       interval: 30s
       timeout: 10s
       retries: 3

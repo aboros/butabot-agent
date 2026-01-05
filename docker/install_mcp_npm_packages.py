@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Pre-install npm packages from npx-based MCP servers in .mcp.json.
+"""Pre-install npm packages from npx-based MCP servers in config/fastagent.config.yaml.
 
 This script is run during Docker build to pre-install npm packages,
 preventing hanging during MCP server initialization at runtime.
 """
-import json
 import subprocess
 import sys
-import signal
+import yaml
+from pathlib import Path
 
 # Configure npm to be more aggressive with timeouts and retries
 def configure_npm():
@@ -59,13 +59,23 @@ def main():
         print("[INFO] Configuring npm with shorter timeouts...", file=sys.stderr)
         configure_npm()
         
-        with open('.mcp.json', 'r') as f:
-            config = json.load(f)
+        # Read from config/fastagent.config.yaml
+        config_path = Path('config/fastagent.config.yaml')
+        if not config_path.exists():
+            print(f"[INFO] Config file {config_path} not found, skipping npm package pre-installation", file=sys.stderr)
+            return
         
-        mcp_servers = config.get('mcpServers', {})
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Handle both camelCase (mcpServers) and snake_case (mcp_servers) keys
+        mcp_servers = config.get('mcpServers', config.get('mcp_servers', {}))
         npm_packages = []
         
         for server_name, server_config in mcp_servers.items():
+            if not isinstance(server_config, dict):
+                continue
+                
             command = server_config.get('command', '')
             args = server_config.get('args', [])
             
@@ -102,9 +112,9 @@ def main():
             else:
                 print(f"[WARNING] Failed to install all npm packages. Continuing anyway...", file=sys.stderr)
         else:
-            print("[INFO] No npx-based MCP servers found in .mcp.json", file=sys.stderr)
+            print("[INFO] No npx-based MCP servers found in config/fastagent.config.yaml", file=sys.stderr)
     except Exception as e:
-        print(f"[WARNING] Error parsing .mcp.json for npm packages: {e}", file=sys.stderr)
+        print(f"[WARNING] Error parsing config/fastagent.config.yaml for npm packages: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
         print("[INFO] Continuing build without pre-installing npm packages", file=sys.stderr)

@@ -1,0 +1,18 @@
+# Tool Approval Rules Configuration
+# Maps tool names to whether approval is required (true) or not (false)
+# 
+# Rules:
+#   - true: Tool requires user approval before execution
+#   - false: Tool can be executed automatically without approval
+#
+# Default behavior: If a tool is not listed, it requires approval (safe default)
+
+rules:
+  # Example rules (adjust based on your tools)
+  # "filesystem_read_file": false
+  # "filesystem_write_file": true
+  # "filesystem_list_directory": false
+  
+  # Add your tool approval rules here
+  # Tool names should match the exact tool name from your MCP servers
+

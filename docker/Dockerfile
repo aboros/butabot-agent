@@ -21,9 +21,13 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy .mcp.json and install script early so we can parse it for dynamic npm package installation
-COPY .mcp.json .
+# Copy config directory and install script early so we can parse it for dynamic npm package installation
+COPY config/ ./config/
 COPY docker/install_mcp_npm_packages.py .
+
+# Install PyYAML early (needed for parsing fastagent.config.yaml)
+# This is a minimal dependency needed before the full requirements.txt install
+RUN pip install --no-cache-dir PyYAML
 
 # Dynamically extract and pre-install npm packages from npx-based MCP servers
 # This prevents hanging during MCP server initialization at runtime
@@ -35,11 +39,26 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy only necessary application files (not entire project root)
+# Copy application files (new multi-platform architecture)
+# Core modules
+COPY agent/ ./agent/
+COPY approval/ ./approval/
+COPY config/ ./config/
+COPY connectors/ ./connectors/
+COPY core/ ./core/
+# Legacy bot module (still needed for factoids and other utilities)
 COPY bot/ ./bot/
+# MCP server
 COPY mcp_nano_banana/ ./mcp_nano_banana/
-# .mcp.json already copied above, but copy again to ensure it's in final image
-COPY .mcp.json .
+# Main application entry point
+COPY app_multi_platform.py .
+# Test agent (useful for debugging)
+COPY test_agent.py .
+# Configuration files
+# Note: factoids.json is optional - FactoidManager handles missing files gracefully
+# If factoids.json doesn't exist, create it from factoids.json.example or the app will start without factoids
+COPY factoids.json* ./
+# Note: MCP configuration is now in config/fastagent.config.yaml (already copied above)
 
 # Create data directory for agent workspace
 RUN mkdir -p /app/data
@@ -47,13 +66,13 @@ RUN mkdir -p /app/data
 # Expose port (for health checks, though Socket Mode doesn't need it)
 EXPOSE 3000
 
-# Health check - simple process check (Socket Mode doesn't expose HTTP)
+# Health check - check for app_multi_platform.py process
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f "python.*bot.app" || exit 1
+    CMD pgrep -f "python.*app_multi_platform" || exit 1
 
 # Set Python to unbuffered mode for immediate log output in Docker
 ENV PYTHONUNBUFFERED=1
 
-# Run the bot
-CMD ["python", "-m", "bot.app"]
+# Run the multi-platform bot application
+CMD ["python", "app_multi_platform.py"]
 

@@ -13,6 +13,9 @@ ENV/
 .env
 .env.local
 
+# Configuration secrets
+config/fastagent.secrets.yaml
+
 # MCP
 .mcp.json
 .cursor/mcp.json

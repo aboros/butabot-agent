@@ -1,0 +1,30 @@
+# Fast Agent MCP Configuration
+# This file configures the fast-agent-mcp framework integration
+
+# Claude model to use
+model: "claude-3-5-sonnet-20241022"
+
+# Maximum tokens per response
+max_tokens: 4096
+
+# MCP servers configuration
+# Each server entry follows the FastMCP client configuration format
+mcpServers:
+  # Example filesystem server (adjust paths as needed)
+  # filesystem:
+  #   command: "npx"
+  #   args:
+  #     - "-y"
+  #     - "@modelcontextprotocol/server-filesystem"
+  #     - "/app/data"
+  #   env: {}
+  
+  # Add your MCP servers here
+  # Use ${VAR_NAME} syntax for environment variable substitution
+  # Example:
+  # my-server:
+  #   command: "python"
+  #   args: ["./server.py"]
+  #   env:
+  #     API_KEY: "${MY_API_KEY}"
+

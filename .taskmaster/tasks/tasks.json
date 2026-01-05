@@ -9,7 +9,7 @@
         "testStrategy": "Unit tests: verify YAML parsing, env substitution (dotenv), validation passes/fails, defaults applied. Mock env vars, assert loaded dict structure matches schema. Coverage: 90%+.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "subtasks": []
       },
       {
@@ -20,7 +20,7 @@
         "testStrategy": "Unit tests: verify ABC cannot instantiate, dataclass serialization/deserialization, type checking. Mock subclass implementation tests.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "subtasks": []
       },
       {
@@ -33,7 +33,7 @@
         "dependencies": [
           1
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": []
       },
       {
@@ -46,7 +46,7 @@
         "dependencies": [
           1
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": []
       },
       {
@@ -59,7 +59,7 @@
         "dependencies": [
           4
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -67,7 +67,7 @@
             "description": "Define ToolApprovalRequest dataclass and initialize storage dict mapping approval_id to ToolApprovalRequest instances using asyncio.Future.",
             "dependencies": [],
             "details": "Create @dataclass ToolApprovalRequest with fields: approval_id:UUID, thread_id:str, tool_name:str, tool_input:dict, tool_use_id:str, created_at:datetime, future:asyncio.Future[bool]. Implement self._approvals: Dict[UUID, ToolApprovalRequest] in ApprovalTracker class with proper type hints and imports (uuid, asyncio, datetime).",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -78,7 +78,7 @@
               1
             ],
             "details": "Implement create_approval(thread_id, tool_name, params, timeout=300) -> UUID: generate UUID, create Future, store ToolApprovalRequest, return id. resolve_approval(approval_id, approved:bool): set future.result(approved). get_future(approval_id) -> Future[bool]: retrieve or raise KeyError. Ensure thread-safe access.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit tests for create/track/resolve, concurrent approvals with asyncio.gather, timeout deny using asyncio.wait_for"
           },
           {
@@ -89,7 +89,7 @@
               2
             ],
             "details": "Implement periodic cleanup task removing expired approvals (created_at + timeout). Use asyncio.Lock for concurrent access protection. Write tests: concurrent approvals (asyncio.gather), timeout deny, cleanup, invalid ID handling, race condition prevention. Mock asyncio for deterministic timing.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit tests: concurrent approvals (asyncio.gather), timeout deny via asyncio.wait_for, cleanup expired, invalid ID handling, mock asyncio for deterministic timing"
           }
         ]
@@ -98,7 +98,7 @@
         "id": 6,
         "title": "Create agent/agent_config.py and ChatPlatformToolAgent",
         "description": "Define fast-agent with MCP config and custom ChatPlatformToolAgent using ToolRunnerHooks for approval integration.",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           2,
           3,
@@ -115,7 +115,7 @@
             "description": "Create agent/agent_config.py with def create_agent() -> ToolAgent using @fast.agent decorator and MCP configuration from loaded config.",
             "dependencies": [],
             "details": "Use fast-agent framework with @fast.agent decorator. Load MCP config from config/fastagent.config.yaml including model='claude-3-5-sonnet-20241022', max_tokens=4096, and MCP servers list. Return configured ToolAgent instance.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit test: verify agent creation succeeds, MCP config loaded correctly, agent type is ToolAgent."
           },
           {
@@ -126,7 +126,7 @@
               1
             ],
             "details": "Inherit from ToolAgent and ToolRunnerHookCapable. Initialize platform_interface in __init__. Implement the ToolRunnerHooks interface methods (before_tool_call and after_tool_call) from fast-agent framework's hook system. Add async methods for status messaging via platform_interface.send_status().\n<info added on 2026-01-05T12:13:14.423Z>\nToolRunnerHookCapable is a specific interface from the fast-agent framework that enables tool execution interception. It requires implementing the ToolRunnerHooks interface methods (before_tool_call and after_tool_call), which are called during the framework's tool execution flow. These hooks are distinct from other hook patterns like PreToolUse/PostToolUse and are specifically designed to integrate with fast-agent's tool execution pipeline. When implementing ChatPlatformToolAgent, these hooks provide the critical interception points needed for approval flows and status messaging to be properly integrated with the fast-agent framework's execution model.\n</info added on 2026-01-05T12:13:14.423Z>",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit test: instantiation, inheritance verification, ToolRunnerHookCapable interface implementation, platform_interface integration mock."
           },
           {
@@ -137,7 +137,7 @@
               2
             ],
             "details": "Implement the before_tool_call method from ToolRunnerHookCapable interface. Check if rules.requires(tool_name), create approval_id = tracker.create(...), await approved = tracker.get_future(approval_id), raise ToolApprovalDenied() if not approved. Call platform_interface.send_status() for updates.\n<info added on 2026-01-05T12:13:21.186Z>\nImplement the before_tool_call method as part of the fast-agent ToolRunnerHooks interface. This method is called by the fast-agent framework before a tool is executed, not to be confused with any PreToolUse hooks mentioned elsewhere. The method signature follows the ToolRunnerHookCapable interface specification:\n\n```python\nasync def before_tool_call(self, tool_use_id: str, tool_name: str, tool_input: dict) -> None:\n    \"\"\"Hook called by fast-agent framework before tool execution\"\"\"\n    if self.rules.requires_approval(tool_name):\n        approval_id = self.tracker.create(\n            thread_id=self.thread_id,\n            tool_name=tool_name,\n            tool_input=tool_input,\n            tool_use_id=tool_use_id\n        )\n        \n        # Send status update that approval is pending\n        await self.platform_interface.send_status(\n            thread_id=self.thread_id,\n            message=f\"Waiting for approval to use tool: {tool_name}\"\n        )\n        \n        # Wait for approval decision\n        try:\n            approved = await self.tracker.get_future(approval_id)\n            if not approved:\n                raise ToolApprovalDenied(f\"Use of tool '{tool_name}' was denied\")\n        except asyncio.TimeoutError:\n            raise ToolApprovalDenied(f\"Approval for tool '{tool_name}' timed out\")\n```\n</info added on 2026-01-05T12:13:21.186Z>",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Integration test: mock rules/tracker/platform, verify ToolRunnerHooks hook interception, approval flow (approve/deny), exception raised on denial."
           },
           {
@@ -148,7 +148,7 @@
               3
             ],
             "details": "class ToolApprovalDenied(Exception): pass. Ensure exception carries tool_name and reason. Add platform_interface.send_status('approval_denied') in workflow. Include in agent test suite.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit test exception raising/handling, integration test full workflow block via exception, coverage for deny path."
           },
           {
@@ -159,7 +159,7 @@
               2
             ],
             "details": "Implement the after_tool_call method from ToolRunnerHookCapable interface. This method is called after a tool execution completes. Use platform_interface.send_status() to report tool execution results. Handle both successful executions and failures appropriately.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit test: verify after_tool_call is called after tool execution, test with both successful and failed tool executions, verify platform status updates."
           }
         ]
@@ -175,7 +175,7 @@
           2,
           6
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -183,7 +183,7 @@
             "description": "Initialize SlackConnector class inheriting PlatformInterface, install slack-bolt 1.19.2, configure App with bot/app tokens, enable SocketModeHandler for event listening.",
             "dependencies": [],
             "details": "Create connectors/slack_connector.py with AsyncApp(token=SLACK_BOT_TOKEN), SocketModeHandler setup. Load env vars securely. Verify app starts without errors using basic logger[1][2].",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -194,7 +194,7 @@
               1
             ],
             "details": "In handle_event: parse body, ack actions immediately, handle app_mention by normalizing message and routing to agent.process or factoids[1][2]. Use async say() for responses.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -205,7 +205,7 @@
               1
             ],
             "details": "Def normalize_slack_message(event): return PlatformMessage(thread_id=event['ts'], content=event['text'], user_id=event['user'], channel=event['channel']). Handle subtypes[1].",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -217,7 +217,7 @@
               3
             ],
             "details": "Use blocks with actions: action_id='approve', 'deny'. In callback: ack(), resolve_approval(approval_id, approved=True/False) via ApprovalTracker. Integrate uuid for IDs[1].",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -230,7 +230,7 @@
               4
             ],
             "details": "Use pytest-asyncio, unittest.mock for App/SocketModeHandler. Assert say() calls, tracker updates, no regressions. Test rate limits with side_effects[1][2].",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Run pytest with coverage >90%, verify mocks match real flows"
           }
         ]
@@ -246,7 +246,7 @@
           2,
           6
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -254,7 +254,7 @@
             "description": "Implement DiscordClient class inheriting from PlatformInterface using nextcord 2.4.0, configure intents for messages and interactions, load bot token from environment.",
             "dependencies": [],
             "details": "Use nextcord.Client or commands.Bot with intents.message_content=True and intents.guilds=True. Implement __init__ with bot setup, run method. Handle on_ready event. Reference nextcord quickstart patterns.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -265,7 +265,7 @@
               1
             ],
             "details": "In on_message: extract message.id as thread_id if threaded, detect mentions/DMs vs channels. In on_interaction: handle View button clicks, defer() then process approval_id. Similar to SlackConnector pattern.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -276,7 +276,7 @@
               1
             ],
             "details": "PlatformMessage fields: thread_id=message.id if message.thread else channel.id, user_id=author.id, content=message.content. Distinguish DM (type==DMChannel) vs guild channels.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -288,7 +288,7 @@
               2
             ],
             "details": "request_approval: create View(ApprovalView(approval_id)), send embed with tool details. View.callback: defer(), resolve via tracker.resolve_approval(approved). Timeout handling via tracker.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": null
           },
           {
@@ -301,7 +301,7 @@
               4
             ],
             "details": "Use pytest-asyncio and unittest.mock. Mock nextcord.Message, Interaction, Client. Test flows: factoid bypass, approval timeout deny, thread handling, 429/500 error resilience. No regressions.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Run pytest with coverage >90%, verify async flows with asyncio.gather, mock tracker futures."
           }
         ]
@@ -317,7 +317,7 @@
           7,
           8
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -325,7 +325,7 @@
             "description": "Update app.py to load config, initialize SlackConnector and DiscordConnector, create shared agent, assign agent to connectors, and start multi-platform event loop.",
             "dependencies": [],
             "details": "Implement async def main(): with config=load_config(), slack=SlackConnector(config), discord=DiscordConnector(config), agent=create_agent(), shared assignment slack.agent = discord.agent = agent, and app.start() for event loop coordination. Ensure async compatibility across platforms.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit tests for connector init, agent sharing, config loading; integration test for startup without errors."
           },
           {
@@ -336,7 +336,7 @@
               1
             ],
             "details": "Define class FactoidManager with async def check(self, msg: PlatformMessage) -> str|None. Use dict/timestamp for in-memory cooldown or Redis for persistence. Select random response from predefined factoids on cooldown miss. Thread-safe for multi-platform.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Unit tests: cooldown hit/miss, random selection, multi-thread access; mock PlatformMessage and Redis."
           },
           {
@@ -348,7 +348,7 @@
               2
             ],
             "details": "Use pytest-asyncio for E2E: simulate parallel messages on both platforms, assert factoid responses with cooldown, verify agent processes independently, test 10 concurrent loads. Mock connectors and agent for isolation.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "E2E test suite: parallel platform messages, factoid hit/miss/cooldown scenarios, agent isolation, load testing with 10 concurrent sessions."
           }
         ]
@@ -445,11 +445,83 @@
             "testStrategy": null
           }
         ]
+      },
+      {
+        "id": 11,
+        "title": "Implement Core MessageHandler Class for Centralized Agent Communication",
+        "description": "Create a core MessageHandler class that centralizes all agent.send() calls, receives normalized PlatformMessages from connectors, and routes responses back through the appropriate connector.",
+        "details": "1. Create a new file `core/message_handler.py` that will serve as the central point for all agent communication.\n\n2. Implement the `MessageHandler` class with the following structure:\n```python\nclass MessageHandler:\n    def __init__(self, agent):\n        self.agent = agent\n        self.connectors = {}  # Map of platform name to connector instance\n    \n    def register_connector(self, platform_name, connector):\n        \"\"\"Register a connector for a specific platform\"\"\"\n        self.connectors[platform_name] = connector\n        \n    async def handle_message(self, message: PlatformMessage):\n        \"\"\"\n        Central method for processing all incoming messages:\n        1. Set thread context on agent\n        2. Call agent.send() with message content\n        3. Route response back through appropriate connector\n        \"\"\"\n        # Set thread context (for maintaining conversation state)\n        self.agent.set_thread(message.thread_id)\n        \n        # Process message with agent\n        response = await self.agent.send(message.content)\n        \n        # Route response back through the originating connector\n        if message.platform in self.connectors:\n            await self.connectors[message.platform].send_message(\n                thread_id=message.thread_id,\n                content=response,\n                msg_type=\"response\"\n            )\n        else:\n            # Log error if connector not found\n            logging.error(f\"No connector registered for platform: {message.platform}\")\n            \n        return response\n```\n\n3. Update `app.py` to initialize and use the MessageHandler:\n```python\nasync def main():\n    config = load_config()\n    \n    # Initialize agent\n    agent = create_agent()\n    \n    # Initialize message handler with agent\n    message_handler = MessageHandler(agent)\n    \n    # Initialize connectors\n    slack = SlackConnector(config)\n    discord = DiscordConnector(config)\n    \n    # Register connectors with message handler\n    message_handler.register_connector(\"slack\", slack)\n    message_handler.register_connector(\"discord\", discord)\n    \n    # Set message handler on connectors\n    slack.message_handler = message_handler\n    discord.message_handler = message_handler\n    \n    # Start application\n    app.start()\n```\n\n4. Update connector classes to use the MessageHandler instead of directly calling agent.send():\n```python\n# In SlackConnector\nasync def handle_event(self, body, say):\n    msg = PlatformMessage(\n        thread_id=body['event']['ts'],\n        user_id=body['event']['user'],\n        content=body['event']['text'],\n        platform=\"slack\",\n        channel_id=body['event']['channel'],\n        is_mention=True if 'app_mention' in body['event_type'] else False\n    )\n    \n    # Check for factoids first\n    if factoid_response := factoids.check(msg):\n        await say(factoid_response)\n        return\n        \n    # Forward to message handler\n    await self.message_handler.handle_message(msg)\n```\n\n5. Add thread context management to the agent class if not already present:\n```python\n# In ChatPlatformToolAgent\ndef set_thread(self, thread_id):\n    \"\"\"Set the current thread context for conversation state\"\"\"\n    self.current_thread = thread_id\n    # Any additional thread context setup\n```\n\n6. Ensure proper error handling and logging throughout the MessageHandler implementation.\n\n7. Consider adding support for message metadata and special message types (e.g., ephemeral messages, direct messages) in the handler.",
+        "testStrategy": "1. Unit tests:\n   - Test MessageHandler initialization and connector registration\n   - Test handle_message with mocked agent and connectors\n   - Verify thread context is properly set on the agent\n   - Test error handling when platform is not registered\n   - Test message routing to the correct connector\n\n2. Integration tests:\n   - Test end-to-end flow from connector → MessageHandler → agent → connector\n   - Verify that responses are correctly routed back through the originating connector\n   - Test with multiple concurrent messages from different platforms\n   - Test with different message types (regular messages, mentions, DMs)\n\n3. Mock tests:\n   - Create mock PlatformMessage objects for different scenarios\n   - Mock agent.send() to return predictable responses\n   - Verify connector.send_message() is called with correct parameters\n\n4. Regression tests:\n   - Ensure existing functionality (factoids, approvals) still works with the new architecture\n   - Verify that thread context is maintained across multiple messages in the same thread\n\n5. Performance tests:\n   - Measure latency impact of the additional abstraction layer\n   - Test with concurrent messages to ensure no bottlenecks\n\n6. Manual testing:\n   - Test with actual Slack and Discord connections\n   - Verify responses are correctly formatted and delivered to the right platform and thread",
+        "status": "done",
+        "dependencies": [
+          2,
+          6,
+          7,
+          8,
+          9
+        ],
+        "priority": "high",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create MessageHandler class file and basic structure",
+            "description": "Create the new file core/message_handler.py and implement the basic MessageHandler class with __init__ and register_connector methods as specified.",
+            "dependencies": [],
+            "details": "Implement class MessageHandler with self.agent and self.connectors dict. Add register_connector method to map platform_name to connector instance. Include proper docstrings and type hints.",
+            "status": "done",
+            "testStrategy": "Unit test initialization with agent mock and connector registration for multiple platforms."
+          },
+          {
+            "id": 2,
+            "title": "Implement core handle_message method",
+            "description": "Add the async handle_message method that processes PlatformMessage: sets thread context, calls agent.send(), and routes response back via connector.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement logic to set agent thread context, await agent.send(message.content), then send response through connectors[message.platform].send_message with thread_id, content, msg_type='response'.",
+            "status": "done",
+            "testStrategy": "Mock PlatformMessage, agent.send(), connector.send_message(). Verify thread set, response routing, and return value."
+          },
+          {
+            "id": 3,
+            "title": "Update app.py for MessageHandler initialization and connector registration",
+            "description": "Modify app.py main() function to create MessageHandler with agent, initialize/register SlackConnector and DiscordConnector, and set message_handler on connectors.",
+            "dependencies": [
+              1
+            ],
+            "details": "Add MessageHandler(agent) instantiation, register_connector('slack', slack), register_connector('discord', discord), and set slack.message_handler/discord.message_handler.",
+            "status": "done",
+            "testStrategy": "Integration test verifying connectors properly registered and message_handler references set correctly."
+          },
+          {
+            "id": 4,
+            "title": "Refactor connectors to use MessageHandler instead of direct agent calls",
+            "description": "Update SlackConnector and DiscordConnector handle_event methods to create PlatformMessage and call self.message_handler.handle_message(msg) instead of direct agent.send().",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Preserve existing factoid checks before forwarding to handler. Ensure PlatformMessage properly normalized with all required fields (thread_id, content, platform, etc.).",
+            "status": "done",
+            "testStrategy": "Test connector event handling end-to-end: event→PlatformMessage→MessageHandler→agent→response routing."
+          },
+          {
+            "id": 5,
+            "title": "Add agent thread context management, error handling, and logging",
+            "description": "Implement agent.set_thread() method if missing, add comprehensive error handling and logging in MessageHandler, including connector-not-found cases and exceptions.",
+            "dependencies": [
+              2
+            ],
+            "details": "Add try/except blocks around agent.send() and connector.send_message(). Use logging.error for missing connectors. Ensure agent has set_thread(current_thread=thread_id) method.",
+            "status": "done",
+            "testStrategy": "Test error scenarios: unregistered platform, agent.send() failures, connector.send_message() exceptions. Verify logs and graceful degradation."
+          }
+        ]
       }
     ],
     "metadata": {
       "created": "2026-01-05T11:55:51.640Z",
-      "updated": "2026-01-05T11:55:51.640Z",
+      "updated": "2026-01-05T13:50:05.930Z",
       "description": "Tasks for master context"
     }
   }
