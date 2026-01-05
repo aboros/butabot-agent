@@ -148,15 +148,7 @@ class ChatPlatformToolAgent:
         Returns:
             Agent response text
         """
-        # Use fast-agent's API to send message
-        # The exact API may vary based on fast-agent-mcp version
-        # This is a placeholder that will need adjustment based on actual API
-        if hasattr(self.agent, "__call__"):
-            # If agent is callable
-            response = await self.agent(message)
-            return response if isinstance(response, str) else str(response)
-        else:
-            # Fallback: try send method if available
-            response = await self.agent.send(message)
-            return response if isinstance(response, str) else str(response)
+        # Use fast-agent's send() method (explicit API)
+        response = await self.agent.send(message)
+        return response if isinstance(response, str) else str(response)
 

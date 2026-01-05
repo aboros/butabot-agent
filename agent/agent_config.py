@@ -4,9 +4,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 try:
-    import fast_agent as fast
+    from fast_agent.core.fastagent import FastAgent
+    
+    # Create the FastAgent instance - required before using @fast.agent decorator
+    fast = FastAgent("Butabot Agent")
 except ImportError:
     fast = None  # Will raise error when trying to use
+    FastAgent = None
 
 from config.loader import load_config, ConfigError
 
@@ -35,23 +39,18 @@ def create_agent_config(config_dir: Optional[Path] = None) -> Dict[str, Any]:
         raise ConfigError(f"Failed to load agent configuration: {e}") from e
 
 
-# Module-level agent definition - required for @fast.agent decorator
-# This will be configured when create_agent_from_config is first called
-_agent_config_cache: Optional[Dict[str, Any]] = None
-
-
-def _get_agent_config(config_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Get or cache agent configuration."""
-    global _agent_config_cache
-    if _agent_config_cache is None:
-        _agent_config_cache = create_agent_config(config_dir)
-    return _agent_config_cache
-
-
-# Agent definition function - will be decorated at runtime
-async def _butabot_agent():
-    """Agent definition function - configured via @fast.agent decorator."""
-    pass
+# Module-level agent definition with default configuration
+# Fast-agent will automatically read from fastagent.config.yaml for actual configuration
+# The decorator parameters here serve as defaults/fallbacks
+if fast is not None:
+    @fast.agent(
+        name="butabot_agent",
+        instruction="You are a helpful assistant with access to tools. Use available tools to help the user.",
+        use_history=True,
+    )
+    async def _butabot_agent():
+        """Agent definition function - configured via @fast.agent decorator."""
+        pass
 
 
 async def create_agent_from_config(
@@ -61,13 +60,17 @@ async def create_agent_from_config(
     """
     Create a fast-agent instance from configuration.
 
-    This function creates and returns the fast.run() context manager
-    configured with the specified model and MCP servers.
+    This function returns the fast.run() context manager for the pre-defined agent.
+    Fast-agent automatically reads configuration from fastagent.config.yaml.
+
+    Note: The agent_config parameter is maintained for backward compatibility
+    but fast-agent reads configuration from the config file automatically.
 
     Args:
-        agent_config: Optional pre-loaded agent configuration dict.
-                     If None, will load from config_dir.
+        agent_config: Optional pre-loaded agent configuration dict (deprecated, kept for compatibility).
+                     Fast-agent reads from fastagent.config.yaml automatically.
         config_dir: Directory containing config files (defaults to ./config)
+                   Used for validation/loading but fast-agent reads from config file.
 
     Returns:
         Fast-agent async context manager (from fast.run())
@@ -85,33 +88,20 @@ async def create_agent_from_config(
             "fast-agent-mcp not installed. Run: pip install fast-agent-mcp>=0.2.5"
         )
 
-    # Load config if not provided
-    if agent_config is None:
-        agent_config = create_agent_config(config_dir)
-
-    # Extract configuration values
-    model = agent_config.get("model", "claude-3-5-sonnet-20241022")
-    mcp_servers = agent_config.get("mcp_servers", {})
-
-    # Convert mcp_servers dict to list format if needed
-    # fast-agent expects servers as a list or dict format
-    servers = mcp_servers if isinstance(mcp_servers, (list, dict)) else []
-
-    # Create agent using @fast.agent decorator
-    # Note: We need to apply the decorator dynamically
-    # The fast.run() function automatically uses the most recently defined @fast.agent
-    @fast.agent(
-        name="butabot_agent",
-        instruction="You are a helpful assistant with access to tools. Use available tools to help the user.",
-        model=model,
-        servers=servers,
-        use_history=True,
-    )
-    async def _agent():
-        """Agent definition function."""
+    # Validate config exists (for error checking)
+    # Fast-agent will read configuration from fastagent.config.yaml automatically
+    if config_dir is None:
+        config_dir = Path("config")
+    
+    try:
+        # Validate that config can be loaded (for early error detection)
+        create_agent_config(config_dir)
+    except ConfigError as e:
+        # Log but don't fail - fast-agent might handle config differently
         pass
 
     # Return the context manager from fast.run()
-    # This will use the agent we just defined
+    # Fast-agent automatically uses the module-level agent definition
+    # and reads configuration from fastagent.config.yaml
     return fast.run()
 

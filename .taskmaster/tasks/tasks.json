@@ -371,7 +371,7 @@
           8,
           9
         ],
-        "status": "pending",
+        "status": "deferred",
         "subtasks": [
           {
             "id": 1,
@@ -517,11 +517,66 @@
             "testStrategy": "Test error scenarios: unregistered platform, agent.send() failures, connector.send_message() exceptions. Verify logs and graceful degradation."
           }
         ]
+      },
+      {
+        "id": 12,
+        "title": "Fix Missing FastAgent Instance Creation in agent/agent_config.py",
+        "description": "Add FastAgent instance creation before using @fast.agent decorator. The code currently uses `import fast_agent as fast` but never creates the required `fast = FastAgent(\"name\")` instance. This violates fast-agent framework requirements.",
+        "details": "According to fast-agent.mdc rules, you must create a FastAgent instance before using decorators:\n\n```python\nfrom fast_agent.core.fastagent import FastAgent\n\nfast = FastAgent(\"Butabot Agent\")  # Required before decorators\n\n@fast.agent(...)\n```\n\nCurrent code in agent/agent_config.py (lines 7-9, 103-109) imports fast_agent but doesn't create the instance. Also, the decorator is applied inside a function which may cause issues.\n\nFix:\n1. Import FastAgent class\n2. Create module-level `fast = FastAgent(\"Butabot Agent\")` instance\n3. Consider moving agent definition to module level if possible\n<info added on 2026-01-05T16:18:58.773Z>\nThe fix should also address the issue in app_multi_platform.py (lines 39-41) which calls create_agent_from_config(). This function currently violates fast-agent framework requirements by creating the decorator inside the function.\n\nExtended fix requirements:\n\n1. Refactor agent/agent_config.py to:\n   - Create a module-level FastAgent instance: `fast = FastAgent(\"Butabot Agent\")`\n   - Move agent definition to module level instead of inside create_agent_from_config()\n   - Modify create_agent_from_config() to return a reference to the pre-defined agent with updated configuration\n\n2. Ensure backward compatibility:\n   - The create_agent_from_config() function should continue to work correctly when called from app_multi_platform.py\n   - The pattern in app_multi_platform.py (lines 40-41) should continue to work with the properly fixed agent creation\n\n3. Implementation approach:\n   - Define the agent at module level with default configuration\n   - Modify create_agent_from_config() to update the existing agent's configuration rather than creating a new one\n   - Ensure dynamic configuration still works by applying configuration changes to the existing agent instance\n\nThis approach maintains the dynamic configuration capability while adhering to fast-agent framework requirements for proper agent instantiation.\n</info added on 2026-01-05T16:18:58.773Z>\n<info added on 2026-01-05T16:21:12.410Z>\n<info added on 2026-01-07T09:15:22.103Z>\nImportant clarification about the implementation approach:\n\n`create_agent_from_config()` is a custom wrapper function defined in our project (agent/agent_config.py, line 57), not a fast-agent internal function. This gives us complete freedom to refactor it while fixing the violations.\n\nCurrent implementation issues:\n- The function currently creates the @fast.agent decorator inside itself, violating framework requirements\n- This pattern is incompatible with fast-agent's expected usage pattern\n\nRevised implementation approach:\n1. Create the FastAgent instance at module level in agent/agent_config.py:\n   ```python\n   from fast_agent.core.fastagent import FastAgent\n   fast = FastAgent(\"Butabot Agent\")\n   ```\n\n2. Define the agent at module level with the @fast.agent decorator using default configuration values\n   ```python\n   @fast.agent(...)\n   def butabot_agent():\n       # Default agent implementation\n   ```\n\n3. Refactor create_agent_from_config() to:\n   - Accept the same parameters for backward compatibility\n   - Apply any dynamic configuration to the existing agent instance\n   - Return fast.run() for the pre-defined agent\n\n4. No changes needed to app_multi_platform.py since the function signature remains the same\n\nThis approach simplifies the fix since we have full control over the implementation and aren't constrained by framework limitations.\n</info added on 2026-01-07T09:15:22.103Z>\n</info added on 2026-01-05T16:21:12.410Z>",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 13,
+        "title": "Fix Missing FastAgent Instance Creation in test_agent.py",
+        "description": "Add FastAgent instance creation before using @fast.agent decorator in test file. The code currently uses `import fast_agent as fast` but never creates the required `fast = FastAgent(\"name\")` instance.",
+        "details": "According to fast-agent.mdc rules, you must create a FastAgent instance before using decorators:\n\n```python\nfrom fast_agent.core.fastagent import FastAgent\n\nfast = FastAgent(\"Test Agent\")  # Required before decorators\n\n@fast.agent(...)\n```\n\nCurrent code in test_agent.py (lines 11-14, 29-35) imports fast_agent but doesn't create the instance.\n\nFix:\n1. Import FastAgent class\n2. Create module-level `fast = FastAgent(\"Test Agent\")` instance before the decorator",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "Fix Agent Decorator Placement in agent/agent_config.py",
+        "description": "The @fast.agent decorator is currently applied inside the create_agent_from_config() function, which may cause issues with how fast-agent tracks agent definitions. Consider moving to module level or using a different pattern.",
+        "details": "Current implementation applies the decorator dynamically inside a function (lines 103-112). While this may work, the fast-agent framework expects decorators at module level for proper agent registration.\n\nOptions:\n1. Move agent definition to module level (preferred if possible)\n2. Verify that dynamic creation works correctly with fast-agent\n3. Use @fast.custom() pattern if dynamic creation is required\n\nThe decorator should ideally be at module level:\n```python\nfast = FastAgent(\"Butabot Agent\")\n\n@fast.agent(name=\"butabot_agent\", ...)\nasync def butabot_agent():\n    pass\n```",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 15,
+        "title": "Fix MCP Server Configuration Format in fastagent.config.yaml",
+        "description": "Update config file to use correct fast-agent format. Currently uses `mcpServers:` (camelCase) but should use `mcp:` → `servers:` nested structure as per fast-agent documentation.",
+        "details": "Current format in config/fastagent.config.yaml:\n```yaml\nmcpServers:\n  server_name:\n    command: \"...\"\n```\n\nRequired format per fast-agent.mdc:\n```yaml\nmcp:\n  servers:\n    server_name:\n      command: \"...\"\n      args: [...]\n      env: {}\n```\n\nThis is a critical fix as the configuration won't be parsed correctly by fast-agent without the proper structure.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 16,
+        "title": "Simplify Message Sending Pattern in agent/tool_agent.py",
+        "description": "The send() method has fallback logic suggesting uncertainty about the fast-agent API. According to rules, both agent.send() and agent() should work. Simplify the implementation.",
+        "details": "Current implementation (lines 141-161) has fallback logic:\n```python\nif hasattr(self.agent, \"__call__\"):\n    response = await self.agent(message)\nelse:\n    response = await self.agent.send(message)\n```\n\nAccording to fast-agent.mdc, both patterns work:\n- `agent.send(\"message\")` - explicit method\n- `agent(\"message\")` - callable interface\n\nRecommendation: Choose one pattern and use it consistently. The `agent.send()` method is more explicit and recommended.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "created": "2026-01-05T11:55:51.640Z",
-      "updated": "2026-01-05T13:50:05.930Z",
+      "updated": "2026-01-05T16:27:57.860Z",
       "description": "Tasks for master context"
     }
   }

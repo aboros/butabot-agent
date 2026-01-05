@@ -8,7 +8,10 @@ import asyncio
 from typing import Any, Dict
 
 try:
-    import fast_agent as fast
+    from fast_agent.core.fastagent import FastAgent
+    
+    # Create the FastAgent instance - required before using @fast.agent decorator
+    fast = FastAgent("Test Agent")
 except ImportError:
     print("ERROR: fast-agent-mcp not installed. Run: pip install fast-agent-mcp>=0.2.5")
     exit(1)

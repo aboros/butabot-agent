@@ -24,7 +24,7 @@ class FastAgentConfig(BaseModel):
 
     model: str = Field(default="claude-3-5-sonnet-20241022")
     max_tokens: int = Field(default=4096, ge=1, le=200000)
-    mcp_servers: Dict[str, Any] = Field(default_factory=dict, alias="mcpServers")
+    mcp_servers: Dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         allow_population_by_field_name = True
@@ -141,6 +141,19 @@ def load_config(config_dir: Optional[Path] = None) -> FastAgentConfig:
             config_dict = {}
         else:
             raise
+
+    # Transform config_dict to handle fast-agent format (mcp: { servers: {...} })
+    # and legacy format (mcpServers: {...})
+    if isinstance(config_dict, dict):
+        # Handle fast-agent format: mcp: { servers: {...} }
+        if "mcp" in config_dict and isinstance(config_dict["mcp"], dict) and "servers" in config_dict["mcp"]:
+            config_dict = config_dict.copy()
+            config_dict["mcp_servers"] = config_dict["mcp"]["servers"]
+            # Don't remove "mcp" as fast-agent needs it, but our code uses mcp_servers
+        # Handle legacy format: mcpServers: {...}
+        elif "mcpServers" in config_dict:
+            config_dict = config_dict.copy()
+            config_dict["mcp_servers"] = config_dict["mcpServers"]
 
     try:
         return FastAgentConfig(**config_dict)
