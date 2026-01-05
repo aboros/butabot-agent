@@ -1,265 +1,739 @@
-<context>
-# Overview  
-The Butabot Agent Refactor project transforms the existing custom-built Slack bot into a multi-platform AI agent using the fast-agent framework. Currently, the bot consists of ~2,250 lines of custom code that manually handles tool execution, conversation management, and platform integration. This refactor will reduce the codebase by 75% (to ~500 lines) while enabling support for multiple chat platforms (Slack, Discord, and future platforms) and maintaining 100% feature parity.
+<rpg-method>
+# Repository Planning Graph (RPG) Method - PRD Template
 
-**Problem Statement:**
-- Current implementation is tightly coupled to Slack, making multi-platform support difficult
-- Manual orchestration code (tool loops, history management) is error-prone and hard to maintain
-- Adding new platforms requires significant code duplication
-- High maintenance burden with custom implementations of framework-level concerns
+This PRD follows the RPG methodology from Microsoft Research, which separates WHAT (functional capabilities) from HOW (structural code organization), then connects them with explicit dependencies for dependency-aware task generation.
+</rpg-method>
 
-**Solution:**
-Migrate to fast-agent framework which handles:
-- AI orchestration and tool execution loops
-- MCP server integration and tool management
-- Conversation history management
-- Multi-modal content support
-- Error handling and retry logic
+---
 
-**Value Proposition:**
-- 75% code reduction (2,250 → 500 lines)
-- Multi-platform support in <1 day per platform
-- Framework-tested orchestration logic
-- Reduced maintenance burden
-- Future-proof architecture with workflow patterns (chaining, parallelism)
+<overview>
+## Problem Statement
 
-**Target Users:**
-- Development teams using the bot for Drupal development
-- Users across Slack and Discord platforms
-- Future users on Teams, WhatsApp, Telegram, etc.
+The current Butabot Agent implementation consists of ~2,250 lines of custom code that is tightly coupled to Slack, making multi-platform support difficult. The manual orchestration code (tool loops, history management) is error-prone and hard to maintain. Adding new platforms requires significant code duplication, and there's a high maintenance burden with custom implementations of framework-level concerns.
 
-# Core Features  
+**Specific Pain Points:**
+- Current implementation is Slack-only (not multi-platform)
+- Manual tool execution loop (~570 lines) is complex and error-prone
+- Custom MCP client wrapper (~400 lines) duplicates framework functionality
+- Tool approval workflow (~370 lines) is tightly coupled to Slack
+- Adding new platforms requires rewriting core logic
+- High maintenance burden with custom orchestration code
 
-## 1. Multi-Platform Support
-**What it does:** Enables the bot to operate identically across Slack, Discord, and future platforms through platform-agnostic connectors.
+**Why Existing Solutions Don't Work:**
+- Current custom implementation doesn't scale to multiple platforms
+- Manual orchestration code is brittle and hard to test
+- Framework-level concerns (tool loops, history management) should be handled by a framework
+- No clear separation between platform logic and core agent logic
 
-**Why it's important:** Expands bot reach without code duplication. Each platform gets full feature parity with minimal platform-specific code (~50 lines per platform).
-
-**How it works:** Platform connectors translate platform-specific events (Slack mentions, Discord messages) into standardized message format, forward to shared agent core, and route responses back in platform-specific format.
-
-## 2. Tool Approval Workflow
-**What it does:** Provides user control over AI tool execution through interactive approval requests with async waiting and exception-based blocking.
-
-**Why it's important:** Safety and transparency. Users see what tools are being used and can approve/deny dangerous operations (file deletion, git pushes, etc.) before execution.
-
-**How it works:** Custom agent class implements ToolRunnerHooks that intercept tool calls, check approval rules (YAML config), request approval from user (async), wait for response, and block execution via exception if denied. Results are reported back to user.
-
-## 3. MCP Tool Integration
-**What it does:** Automatically discovers and manages 90+ tools from 5-6 MCP servers (filesystem, Drupal, Brave Search, etc.) without manual tool registration.
-
-**Why it's important:** Access to rich tool ecosystem. Framework handles tool discovery, schema conversion, and execution automatically.
-
-**How it works:** fast-agent framework automatically discovers tools from configured MCP servers, converts schemas, and provides them to the agent. Custom code only needs to handle approval workflow.
-
-## 4. Thread-Aware Conversations
-**What it does:** Maintains separate conversation contexts per thread/conversation, enabling natural multi-turn dialogues.
-
-**Why it's important:** User experience. Users can have multiple conversations simultaneously without context mixing.
-
-**How it works:** Framework manages conversation history per thread ID. Each platform connector provides thread/conversation identifiers, and framework maintains isolated message histories.
-
-## 5. Factoid System
-**What it does:** Provides simple string-triggered responses for common queries (e.g., "ping" → "pong") without invoking Claude.
-
-**Why it's important:** Performance and user experience. Instant responses for common queries, reduces API costs, prevents unnecessary Claude calls.
-
-**How it works:** Platform connectors check factoid configuration before forwarding to agent. If match found, respond immediately and skip Claude processing. Supports cooldowns, multiple responses, and mention-only triggers.
-
-## 6. Image Generation & Handling
-**What it does:** Supports image generation tools and posts images directly to chat platforms.
-
-**Why it's important:** Rich content support. Users can generate images and see them inline in chat.
-
-**How it works:** Tool results containing images are detected, uploaded to platform using platform-specific APIs, and posted to conversation thread.
-
-## 7. Error Handling & User Feedback
-**What it does:** Detects API errors, rate limits, and tool failures, presenting user-friendly messages while logging detailed errors.
-
-**Why it's important:** User experience and debugging. Users see helpful messages, developers get detailed logs.
-
-**How it works:** Framework and custom hooks detect errors, format user-friendly messages, send to platform, and log detailed information for debugging.
-
-# User Experience  
-
-## User Personas
+## Target Users
 
 ### Primary Persona: Drupal Developer
 - **Needs:** AI assistant for Drupal development tasks (file operations, module management, code generation)
 - **Platform:** Primarily Slack (workplace), occasionally Discord (community)
-- **Key Flows:** File operations, code generation, Drupal-specific commands
-- **Pain Points:** Waiting for tool approvals, unclear what bot is doing
+- **Workflows:** File operations, code generation, Drupal-specific commands
+- **Pain Points:** Waiting for tool approvals, unclear what bot is doing, platform lock-in
 
 ### Secondary Persona: General Developer
 - **Needs:** General development assistance (web search, file operations, code analysis)
-- **Platform:** Slack or Discord
-- **Key Flows:** Web search, code analysis, file operations
-- **Pain Points:** Multi-platform inconsistency, lack of transparency
+- **Platform:** Slack or Discord (varies by team)
+- **Workflows:** Web search, code analysis, file operations
+- **Pain Points:** Multi-platform inconsistency, lack of transparency, need to use different bots per platform
 
-## Key User Flows
+## Success Metrics
 
-### Flow 1: Tool Execution with Approval
-1. User: "@bot delete all files in /tmp"
-2. Bot: "🤔 Thinking..."
-3. Bot: "🔧 Using tool: delete_directory"
-4. Bot: "⚠️ Tool Approval Request - Delete directory /tmp? [Approve] [Deny]"
-5. User clicks [Approve]
-6. Bot: "✅ Tool approved. Executing..."
-7. Bot: "✅ delete_directory completed"
-8. Bot: "Directory deleted successfully"
+**Quantifiable Outcomes:**
+- **Code Reduction:** 75% reduction (2,250 → 500 lines of custom code)
+- **Platform Addition Time:** <1 day per new platform
+- **Feature Parity:** 100% of existing features maintained
+- **Performance:** Response times ≤ current implementation
+- **Test Coverage:** ≥80% code coverage
+- **Deployment:** Zero downtime migration from old to new implementation
 
-### Flow 2: Multi-Turn Conversation
-1. User: "@bot read config.yml"
-2. Bot: [Reads and displays file]
-3. User: "Update the version to 2.0"
-4. Bot: [Remembers context, updates file]
-5. User: "What changed?"
-6. Bot: [Shows diff based on conversation history]
+**Measurable Improvements:**
+- Multi-platform support: 2+ platforms (Slack + Discord) working simultaneously
+- Tool approval workflow: 100% of dangerous operations require approval
+- Error handling: User-friendly error messages for 100% of error cases
+- Maintainability: Framework updates improve bot automatically (no custom code changes needed)
+</overview>
 
-### Flow 3: Factoid Response
-1. User: "ping"
-2. Bot: "pong" (instant, no Claude call)
+---
 
-### Flow 4: Multi-Platform Consistency
-1. User on Slack: "@bot search for Python async patterns"
-2. Bot: [Searches, returns results]
-3. User on Discord: "@bot search for Python async patterns"
-4. Bot: [Identical behavior, same results, same approval workflow]
+<functional-decomposition>
+## Capability Tree
 
-## UI/UX Considerations
+### Capability: Platform Integration
+Handles communication with chat platforms (Slack, Discord, future platforms), translating platform-specific events into standardized format and routing responses back.
 
-### Transparency
-- All tool usage reported in real-time
-- Clear approval requests with tool name and parameters
-- Status updates during execution ("⚙️ Executing tool...")
-- Result summaries after completion
+#### Feature: Message Reception
+- **Description**: Receive and normalize messages from chat platforms (Slack mentions, Discord messages)
+- **Inputs**: Platform-specific event objects (Slack Bolt events, Discord.py events)
+- **Outputs**: Standardized `PlatformMessage` object with thread_id, user_id, content, platform, channel_id, is_mention
+- **Behavior**: Extract message text, user ID, channel ID, thread ID from platform event. Normalize to common format. Detect if bot was mentioned.
 
-### Responsiveness
-- Instant factoid responses (<100ms)
-- Thinking indicators during processing
-- Progressive updates (tool calls, results, final response)
-- Non-blocking approval requests (conversation continues after approval)
+#### Feature: Message Transmission
+- **Description**: Send messages back to chat platforms in platform-appropriate format
+- **Inputs**: Thread ID, message content (text or structured blocks), message type (response, status, error)
+- **Outputs**: Platform-specific message sent to channel/thread
+- **Behavior**: Format content for platform (Slack blocks, Discord embeds). Post to correct channel/thread. Handle platform-specific formatting requirements.
 
-### Error Handling
-- User-friendly error messages (no technical jargon)
-- Clear action items ("Please try again in a few moments")
-- Graceful degradation (bot continues working if one tool fails)
+#### Feature: Approval Request Handling
+- **Description**: Request tool approval from users via platform-specific interactive components (buttons)
+- **Inputs**: Thread ID, tool name, tool parameters, approval timeout
+- **Outputs**: Boolean (approved/denied), approval request message posted to platform
+- **Behavior**: Create approval request with tool details. Post interactive buttons to platform. Wait for user response (async). Handle timeout (default deny). Return approval decision.
 
-### Platform Consistency
-- Identical behavior across platforms
-- Platform-appropriate formatting (Slack blocks, Discord embeds)
-- Consistent approval workflow regardless of platform
-</context>
-<PRD>
-# Technical Architecture  
+#### Feature: Button Interaction Processing
+- **Description**: Process user button clicks (approve/deny) from platforms
+- **Inputs**: Platform-specific button interaction event, approval ID
+- **Outputs**: Approval decision resolved, approval tracker updated
+- **Behavior**: Extract approval ID from button click. Resolve pending approval request. Update approval tracker. Continue tool execution or block based on decision.
 
+#### Feature: Factoid Checking
+- **Description**: Check incoming messages against factoid configuration before agent processing
+- **Inputs**: Message text, factoid configuration (JSON), cooldown tracker
+- **Outputs**: Factoid response string (if matched) or None, cooldown updated
+- **Behavior**: Match message text against factoid triggers (exact match, case-sensitive). Check cooldown (30 seconds global). Select random response if multiple available. Return response or None.
+
+### Capability: Tool Approval Workflow
+Provides user control over AI tool execution through interactive approval requests with async waiting and exception-based blocking.
+
+#### Feature: Approval Rule Management
+- **Description**: Load and query tool-specific approval requirements from configuration
+- **Inputs**: Tool name, approval rules configuration (YAML)
+- **Outputs**: Boolean indicating if tool requires approval
+- **Behavior**: Load approval rules from `approval_rules.yaml`. Query rules by tool name. Return default behavior if tool not specified. Support tool category rules.
+
+#### Feature: Tool Usage Reporting
+- **Description**: Report tool usage to users in real-time before execution
+- **Inputs**: Thread ID, tool name, tool parameters, platform interface
+- **Outputs**: Status message posted to platform
+- **Behavior**: Format tool information (name, parameters). Send status update to platform via connector. Use platform-appropriate formatting (context blocks, embeds).
+
+#### Feature: Approval Request Processing
+- **Description**: Request approval from user, wait for response, block execution if denied
+- **Inputs**: Thread ID, tool name, tool parameters, platform interface, approval rules
+- **Outputs**: Boolean (approved/denied), approval request posted
+- **Behavior**: Check if tool requires approval. If yes, request approval via platform (async). Wait for user response with timeout. Block execution by raising exception if denied. Continue if approved.
+
+#### Feature: Tool Result Reporting
+- **Description**: Report tool execution results to users after completion
+- **Inputs**: Thread ID, tool name, tool result, success/error status, platform interface
+- **Outputs**: Result message posted to platform, approval message updated
+- **Behavior**: Format tool result (truncate if large). Send status update to platform. Update approval request message with result. Handle errors gracefully.
+
+#### Feature: Approval Tracking
+- **Description**: Track pending approval requests across concurrent conversations
+- **Inputs**: Approval ID, thread ID, tool use ID, approval decision
+- **Outputs**: Approval state tracked, approval requests resolved
+- **Behavior**: Store pending approvals by ID. Map tool_use_id to approval_id. Resolve approvals when user responds. Clean up after completion or timeout.
+
+### Capability: Agent Orchestration
+Manages AI agent interactions, tool execution, and conversation flow using fast-agent framework.
+
+#### Feature: Agent Definition
+- **Description**: Define AI agent using fast-agent framework with MCP servers and configuration
+- **Inputs**: Agent configuration (model, MCP servers, parameters), fast-agent framework
+- **Outputs**: Configured agent instance ready for message processing
+- **Behavior**: Use `@fast.agent` decorator to define agent. Configure MCP servers from `fastagent.config.yaml`. Set model and parameters. Initialize framework.
+
+#### Feature: Message Processing
+- **Description**: Process user messages through agent and return responses
+- **Inputs**: Thread ID, user message text, agent instance, conversation history
+- **Outputs**: Agent response (text, tool calls, multi-modal content)
+- **Behavior**: Send message to agent via `agent.send()`. Framework handles tool execution loop automatically. Return response with text and tool results. Maintain conversation history per thread.
+
+#### Feature: Tool Execution Loop
+- **Description**: Automatically execute tools requested by agent, handle results, continue conversation
+- **Inputs**: Tool calls from agent, tool definitions from MCP servers, approval workflow
+- **Outputs**: Tool execution results, continued agent response
+- **Behavior**: Framework detects tool calls. Execute tools via MCP. Handle tool results. Continue conversation with results. Repeat until agent completes (no more tool calls).
+
+#### Feature: Conversation History Management
+- **Description**: Maintain separate conversation contexts per thread/conversation
+- **Inputs**: Thread ID, messages (user and assistant), framework
+- **Outputs**: Conversation history stored and retrieved per thread
+- **Behavior**: Framework manages history per thread ID. Store full message arrays. Retrieve history for context. Isolate conversations across threads.
+
+#### Feature: Multi-Modal Content Support
+- **Description**: Handle files, images, PDFs in messages and tool results
+- **Inputs**: Multi-modal content (files, images), platform interface, tool results
+- **Outputs**: Content processed and displayed appropriately
+- **Behavior**: Framework handles multi-modal content automatically. Detect image results from tools. Upload images to platform. Display content in platform-appropriate format.
+
+### Capability: MCP Tool Integration
+Manages integration with MCP (Model Context Protocol) servers for tool discovery and execution.
+
+#### Feature: Tool Discovery
+- **Description**: Automatically discover tools from configured MCP servers
+- **Inputs**: MCP server configurations, fast-agent framework
+- **Outputs**: List of available tools with schemas
+- **Behavior**: Framework connects to MCP servers. Discovers tools automatically. Converts schemas (MCP → Anthropic format). Caches tool definitions.
+
+#### Feature: Tool Execution
+- **Description**: Execute tools from MCP servers with proper parameter handling
+- **Inputs**: Tool name, tool parameters, MCP server connection
+- **Outputs**: Tool execution result (structured data, text, errors)
+- **Behavior**: Framework routes tool calls to correct MCP server. Executes tool with parameters. Handles errors gracefully. Returns structured results.
+
+#### Feature: Multi-Server Management
+- **Description**: Manage multiple MCP servers (5-6 servers, 90+ tools) simultaneously
+- **Inputs**: Multiple MCP server configurations, framework
+- **Outputs**: Unified tool interface across all servers
+- **Behavior**: Framework handles multiple servers automatically. Routes tool calls to correct server. Maintains connections. Handles server failures gracefully.
+
+### Capability: Error Handling & User Feedback
+Detects and handles errors gracefully, providing user-friendly messages while logging detailed information.
+
+#### Feature: Error Detection
+- **Description**: Detect API errors, rate limits, and tool failures
+- **Inputs**: API responses, tool results, error messages
+- **Outputs**: Error type identified, user-friendly message formatted
+- **Behavior**: Check for common error patterns (529 overloaded, 429 rate limit, 401 auth, 500 internal). Extract error details. Format user-friendly message.
+
+#### Feature: Error Reporting
+- **Description**: Send user-friendly error messages to platforms while logging details
+- **Inputs**: Error type, error details, thread ID, platform interface
+- **Outputs**: User-friendly error message posted, detailed error logged
+- **Behavior**: Format error for user (no technical jargon). Post to platform. Log detailed error for debugging. Continue operation if possible.
+
+#### Feature: Error Recovery
+- **Description**: Handle errors gracefully, allow bot to continue operating
+- **Inputs**: Error context, system state
+- **Outputs**: System continues operating, error handled
+- **Behavior**: Catch and handle errors at appropriate levels. Don't crash on single tool failure. Provide fallback behavior. Log errors for debugging.
+
+### Capability: Configuration Management
+Manages configuration files, environment variables, and secrets for the bot.
+
+#### Feature: Configuration Loading
+- **Description**: Load configuration from YAML files and environment variables
+- **Inputs**: Configuration files (`fastagent.config.yaml`, `approval_rules.yaml`), environment variables
+- **Outputs**: Loaded configuration objects
+- **Behavior**: Parse YAML files. Substitute environment variables (${VAR_NAME}). Validate configuration. Provide defaults for missing values.
+
+#### Feature: Secret Management
+- **Description**: Manage API keys and credentials securely
+- **Inputs**: `fastagent.secrets.yaml` file, environment variables
+- **Outputs**: Secrets available to components that need them
+- **Behavior**: Load secrets from gitignored file. Substitute environment variables. Provide secrets to framework and connectors. Never commit secrets to version control.
+</functional-decomposition>
+
+---
+
+<structural-decomposition>
+## Repository Structure
+
+```
+butabot-agent/
+├── bot/
+│   ├── connectors/              # Platform connectors module
+│   │   ├── __init__.py
+│   │   ├── interface.py          # PlatformInterface abstract class
+│   │   ├── slack_connector.py   # SlackConnector implementation
+│   │   └── discord_connector.py  # DiscordConnector implementation
+│   ├── agent/                    # Agent orchestration module
+│   │   ├── __init__.py
+│   │   ├── tool_agent.py        # ChatPlatformToolAgent class
+│   │   └── agent_config.py      # Agent definition and configuration
+│   ├── approval/                 # Tool approval module
+│   │   ├── __init__.py
+│   │   ├── rules_manager.py     # ApprovalRulesManager class
+│   │   └── approval_tracker.py  # Approval tracking system
+│   ├── factoids.py              # Factoid system (existing, minimal changes)
+│   └── app.py                   # Main application entry point
+├── config/
+│   ├── fastagent.config.yaml    # fast-agent configuration
+│   ├── fastagent.secrets.yaml   # API keys and secrets (gitignored)
+│   └── approval_rules.yaml      # Tool approval rules
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+└── docs/
+```
+
+## Module Definitions
+
+### Module: connectors
+- **Maps to capability**: Platform Integration
+- **Responsibility**: Handle platform-specific communication (Slack, Discord, future platforms)
+- **File structure**:
+  ```
+  connectors/
+  ├── interface.py           # PlatformInterface abstract base class
+  ├── slack_connector.py     # SlackConnector (message reception, transmission, approval)
+  ├── discord_connector.py   # DiscordConnector (message reception, transmission, approval)
+  └── __init__.py            # Public exports
+  ```
+- **Exports**:
+  - `PlatformInterface` - Abstract base class for platform connectors
+  - `SlackConnector` - Slack platform implementation
+  - `DiscordConnector` - Discord platform implementation
+  - `PlatformMessage` - Standardized message data model
+
+### Module: agent
+- **Maps to capability**: Agent Orchestration
+- **Responsibility**: Manage AI agent interactions using fast-agent framework
+- **File structure**:
+  ```
+  agent/
+  ├── tool_agent.py          # ChatPlatformToolAgent with hooks
+  ├── agent_config.py        # Agent definition (@fast.agent)
+  └── __init__.py            # Public exports
+  ```
+- **Exports**:
+  - `ChatPlatformToolAgent` - Custom agent class with ToolRunnerHooks
+  - `create_agent()` - Factory function to create configured agent instance
+
+### Module: approval
+- **Maps to capability**: Tool Approval Workflow
+- **Responsibility**: Manage tool approval rules and tracking
+- **File structure**:
+  ```
+  approval/
+  ├── rules_manager.py       # ApprovalRulesManager (loads and queries rules)
+  ├── approval_tracker.py    # Approval tracking system
+  └── __init__.py            # Public exports
+  ```
+- **Exports**:
+  - `ApprovalRulesManager` - Loads and queries approval rules
+  - `ApprovalTracker` - Tracks pending approvals
+  - `ToolApprovalDenied` - Exception for denied approvals
+
+### Module: factoids
+- **Maps to capability**: Platform Integration (Factoid Checking feature)
+- **Responsibility**: Simple string-triggered responses without Claude
+- **File structure**:
+  ```
+  factoids.py                # Existing file, minimal changes
+  ```
+- **Exports**:
+  - `FactoidManager` - Checks factoids before agent processing (existing)
+
+### Module: config
+- **Maps to capability**: Configuration Management
+- **Responsibility**: Configuration files and loading
+- **File structure**:
+  ```
+  config/
+  ├── fastagent.config.yaml  # fast-agent configuration
+  ├── fastagent.secrets.yaml # Secrets (gitignored)
+  └── approval_rules.yaml    # Approval rules
+  ```
+- **Note**: Configuration files, not Python modules. Loaded by other modules.
+</structural-decomposition>
+
+---
+
+<dependency-graph>
+## Dependency Chain
+
+### Foundation Layer (Phase 0)
+No dependencies - these are built first.
+
+- **config**: Configuration file structure and loading utilities
+  - Provides: Configuration loading, secret management
+  - No dependencies
+
+- **connectors.interface**: Platform abstraction interface
+  - Provides: `PlatformInterface` abstract base class, `PlatformMessage` data model
+  - No dependencies
+
+### Framework Integration Layer (Phase 1)
+Depends on foundation layer.
+
+- **agent.agent_config**: fast-agent framework integration
+  - Provides: Agent definition using `@fast.agent`, MCP server configuration
+  - Depends on: [config]
+  - Framework dependency: fast-agent-mcp package
+
+### Tool Flow Layer (Phase 2)
+Depends on foundation and framework layers.
+
+- **approval.rules_manager**: Approval rules management
+  - Provides: Load and query approval rules from YAML
+  - Depends on: [config]
+
+- **approval.approval_tracker**: Approval tracking system
+  - Provides: Track pending approvals, resolve approvals
+  - Depends on: [approval.rules_manager]
+
+- **agent.tool_agent**: Custom agent with ToolRunnerHooks
+  - Provides: `ChatPlatformToolAgent` class with approval hooks
+  - Depends on: [agent.agent_config, connectors.interface, approval.rules_manager, approval.approval_tracker]
+  - Framework dependency: fast-agent ToolRunnerHooks
+
+### Platform Layer (Phase 3)
+Depends on foundation, framework, and tool flow layers.
+
+- **connectors.slack_connector**: Slack platform implementation
+  - Provides: Slack message handling, approval requests, button interactions
+  - Depends on: [connectors.interface, agent.tool_agent, factoids]
+  - External dependency: slack-bolt library
+
+- **connectors.discord_connector**: Discord platform implementation
+  - Provides: Discord message handling, approval requests, button interactions
+  - Depends on: [connectors.interface, agent.tool_agent, factoids]
+  - External dependency: discord.py library
+
+### Integration Layer (Phase 4)
+Depends on all previous layers.
+
+- **factoids**: Factoid system integration
+  - Provides: Factoid checking before agent processing
+  - Depends on: [connectors.slack_connector, connectors.discord_connector]
+  - Note: Existing module, minimal changes needed
+
+- **app**: Main application entry point
+  - Provides: Application startup, event loop, platform connector initialization
+  - Depends on: [connectors.slack_connector, connectors.discord_connector, agent.tool_agent]
+</dependency-graph>
+
+---
+
+<implementation-roadmap>
+## Development Phases
+
+### Phase 0: Foundation & Verification
+**Goal**: Establish foundation modules and verify fast-agent framework capabilities
+
+**Entry Criteria**: Clean repository, fast-agent-mcp package available
+
+**Tasks**:
+- [ ] Create configuration file structure (depends on: none)
+  - Acceptance criteria: `fastagent.config.yaml`, `fastagent.secrets.yaml`, `approval_rules.yaml` templates created
+  - Test strategy: Verify files can be loaded, environment variable substitution works
+
+- [ ] Create `connectors/interface.py` with PlatformInterface (depends on: none)
+  - Acceptance criteria: Abstract base class with all required methods defined
+  - Test strategy: Unit tests for interface definition, cannot instantiate directly
+
+- [ ] Install and configure fast-agent-mcp (depends on: none)
+  - Acceptance criteria: Package installed, basic agent definition works
+  - Test strategy: Create minimal agent, verify it can be instantiated
+
+- [ ] Create POC: Minimal agent with single tool and approval hook (depends on: [fast-agent installed, connectors.interface])
+  - Acceptance criteria: Agent executes tool, hook intercepts, approval workflow works
+  - Test strategy: End-to-end test with single tool, verify hook async support, verify tool blocking
+
+- [ ] Verify MCP integration with existing servers (depends on: [fast-agent installed])
+  - Acceptance criteria: All existing MCP servers connect, tools discovered correctly
+  - Test strategy: Test each MCP server, verify tool discovery, test tool execution
+
+**Exit Criteria**: Foundation modules exist, fast-agent verified to support all required features, POC demonstrates approval workflow works
+
+**Delivers**: Decision point - proceed with full refactor or use hybrid approach
+
+---
+
+### Phase 1: Framework Integration
+**Goal**: Integrate fast-agent framework and create agent definition
+
+**Entry Criteria**: Phase 0 complete, fast-agent verified
+
+**Tasks**:
+- [ ] Create `agent/agent_config.py` with agent definition (depends on: [config])
+  - Acceptance criteria: Agent defined with `@fast.agent`, MCP servers configured, model set
+  - Test strategy: Verify agent can be instantiated, MCP servers connect, tools discovered
+
+- [ ] Create `fastagent.config.yaml` with all MCP servers (depends on: [config structure])
+  - Acceptance criteria: All 5-6 MCP servers configured, environment variables substituted
+  - Test strategy: Verify configuration loads, all servers connect, tools discovered
+
+- [ ] Create `fastagent.secrets.yaml` template (depends on: [config structure])
+  - Acceptance criteria: Template created, environment variable references work
+  - Test strategy: Verify secrets load, substitution works, gitignored correctly
+
+**Exit Criteria**: fast-agent agent defined and working, all MCP servers integrated, configuration files complete
+
+**Delivers**: Working agent that can process messages and execute tools (without approval workflow yet)
+
+---
+
+### Phase 2: Tool Flow Layer
+**Goal**: Implement tool approval workflow with hooks
+
+**Entry Criteria**: Phase 1 complete, agent working
+
+**Tasks**:
+- [ ] Create `approval/rules_manager.py` (depends on: [config])
+  - Acceptance criteria: Loads rules from YAML, queries by tool name, returns approval requirement
+  - Test strategy: Unit tests for rule loading, querying, default behavior
+
+- [ ] Create `approval_rules.yaml` configuration (depends on: [config structure])
+  - Acceptance criteria: All tools configured, default behavior set
+  - Test strategy: Verify rules load correctly, queries return expected values
+
+- [ ] Create `approval/approval_tracker.py` (depends on: [approval.rules_manager])
+  - Acceptance criteria: Tracks pending approvals, resolves approvals, handles timeouts
+  - Test strategy: Unit tests for tracking, resolution, timeout handling, concurrent approvals
+
+- [ ] Create `agent/tool_agent.py` with ChatPlatformToolAgent (depends on: [agent.agent_config, connectors.interface, approval.rules_manager, approval.approval_tracker])
+  - Acceptance criteria: Extends ToolAgent, implements ToolRunnerHookCapable, hooks work correctly
+  - Test strategy: Unit tests for hooks, integration tests with fast-agent, verify approval workflow
+
+**Exit Criteria**: Tool approval hooks implemented and tested, approval rules configurable, async approval waiting works
+
+**Delivers**: Agent with full approval workflow (can be tested independently of platforms)
+
+---
+
+### Phase 3: Platform Connectors
+**Goal**: Extract Slack logic into connector, create Discord connector
+
+**Entry Criteria**: Phase 2 complete, tool flow layer working
+
+**Tasks**:
+- [ ] Extract Slack logic into `connectors/slack_connector.py` (depends on: [connectors.interface, agent.tool_agent])
+  - Acceptance criteria: All Slack event handling extracted, uses PlatformInterface, integrates with agent
+  - Test strategy: Integration tests with existing Slack bot, verify all features work, no regression
+
+- [ ] Update `app.py` to use SlackConnector (depends on: [connectors.slack_connector])
+  - Acceptance criteria: app.py simplified, uses connector, all features maintained
+  - Test strategy: End-to-end tests, verify Slack bot works identically
+
+- [ ] Create `connectors/discord_connector.py` (depends on: [connectors.interface, agent.tool_agent])
+  - Acceptance criteria: Discord connector implements PlatformInterface, handles messages and approvals
+  - Test strategy: Integration tests with Discord bot, verify approval workflow works
+
+- [ ] Integrate factoid system with connectors (depends on: [connectors.slack_connector, connectors.discord_connector])
+  - Acceptance criteria: Factoids checked before agent processing, work on both platforms
+  - Test strategy: Test factoid checking, cooldowns, multiple responses
+
+**Exit Criteria**: Both Slack and Discord connectors working, factoid system integrated, multi-platform support validated
+
+**Delivers**: Working multi-platform bot (Slack + Discord) with full feature parity
+
+---
+
+### Phase 4: Integration & Testing
+**Goal**: Comprehensive testing, error handling, and documentation
+
+**Entry Criteria**: Phase 3 complete, both platforms working
+
+**Tasks**:
+- [ ] Create comprehensive test suite (depends on: [all modules])
+  - Acceptance criteria: ≥80% code coverage, unit tests for all modules, integration tests for connectors, e2e tests for workflows
+  - Test strategy: Test pyramid (70% unit, 20% integration, 10% e2e), all critical paths covered
+
+- [ ] Implement error handling improvements (depends on: [all modules])
+  - Acceptance criteria: All errors detected, user-friendly messages, detailed logging
+  - Test strategy: Test error scenarios, verify user messages, verify logging
+
+- [ ] Performance testing and optimization (depends on: [all modules])
+  - Acceptance criteria: Response times ≤ current, tool execution no degradation, memory efficient
+  - Test strategy: Benchmark before/after, profile hot paths, optimize if needed
+
+- [ ] Documentation updates (depends on: [all modules])
+  - Acceptance criteria: Architecture docs, configuration guide, migration guide, API docs complete
+  - Test strategy: Documentation review, verify examples work
+
+**Exit Criteria**: All tests pass, performance acceptable, error handling robust, documentation complete
+
+**Delivers**: Production-ready system with comprehensive testing and documentation
+
+---
+
+### Phase 5: Deployment & Migration
+**Goal**: Deploy to production and migrate from old implementation
+
+**Entry Criteria**: Phase 4 complete, all tests pass
+
+**Tasks**:
+- [ ] Deploy to staging environment (depends on: [all modules, tests])
+  - Acceptance criteria: Staging deployment successful, all features work
+  - Test strategy: Staging environment testing, verify all features
+
+- [ ] Run parallel with existing bot (depends on: [staging deployment])
+  - Acceptance criteria: Both implementations run simultaneously, no conflicts
+  - Test strategy: Parallel run validation, monitor for issues
+
+- [ ] Gradual migration to production (depends on: [parallel run validated])
+  - Acceptance criteria: Migration plan executed, zero downtime, all features working
+  - Test strategy: Monitor production, verify no user-facing issues
+
+- [ ] Remove old implementation code (depends on: [migration complete])
+  - Acceptance criteria: Old code removed, only new implementation remains
+  - Test strategy: Verify old code removed, new code is only implementation
+
+**Exit Criteria**: Production deployment successful, migration complete, old code removed, no user-facing issues
+
+**Delivers**: Fully migrated production system using fast-agent framework
+</implementation-roadmap>
+
+---
+
+<test-strategy>
+## Test Pyramid
+
+```
+        /\
+       /E2E\       ← 10% (End-to-end workflows, slow, comprehensive)
+      /------\
+     /Integration\ ← 20% (Module interactions, platform connectors)
+    /------------\
+   /  Unit Tests  \ ← 70% (Fast, isolated, deterministic)
+  /----------------\
+```
+
+## Coverage Requirements
+- Line coverage: 80% minimum
+- Branch coverage: 75% minimum
+- Function coverage: 85% minimum
+- Statement coverage: 80% minimum
+
+## Critical Test Scenarios
+
+### Module: connectors.slack_connector
+**Happy path**:
+- Receive Slack mention event → Normalize to PlatformMessage → Forward to agent → Format response → Post to Slack
+- Expected: Message processed correctly, response posted to correct thread
+
+**Edge cases**:
+- Message in thread vs channel → Handle thread_ts correctly
+- Bot mentioned vs not mentioned → Detect is_mention correctly
+- Empty message → Skip processing
+- Expected: All edge cases handled gracefully
+
+**Error cases**:
+- Slack API error → Catch and log, send user-friendly message
+- Network timeout → Retry or fail gracefully
+- Expected: Errors don't crash bot, user sees helpful message
+
+**Integration points**:
+- Factoid checking before agent → Factoid matched, response sent, agent not called
+- Approval request → Button posted, user clicks, approval resolved
+- Expected: All integrations work correctly
+
+### Module: connectors.discord_connector
+**Happy path**:
+- Receive Discord message event → Normalize to PlatformMessage → Forward to agent → Format response → Post to Discord
+- Expected: Message processed correctly, response posted to correct channel/thread
+
+**Edge cases**:
+- Direct message vs channel message → Handle context correctly
+- Bot mentioned vs not mentioned → Detect mention correctly
+- Expected: All edge cases handled gracefully
+
+**Error cases**:
+- Discord API error → Catch and log, send user-friendly message
+- Network timeout → Retry or fail gracefully
+- Expected: Errors don't crash bot, user sees helpful message
+
+**Integration points**:
+- Factoid checking before agent → Factoid matched, response sent, agent not called
+- Approval request → Button posted, user clicks, approval resolved
+- Expected: All integrations work correctly
+
+### Module: agent.tool_agent
+**Happy path**:
+- Tool call detected → before_tool_call hook → Approval not required → Tool executes → after_tool_call hook → Result reported
+- Expected: Tool executes successfully, results reported to platform
+
+**Edge cases**:
+- Tool requires approval → Approval requested → User approves → Tool executes
+- Tool requires approval → Approval requested → User denies → Tool blocked
+- Approval timeout → Tool blocked, timeout message sent
+- Expected: All approval scenarios handled correctly
+
+**Error cases**:
+- Tool execution fails → Error caught, reported to user, logged
+- Approval request fails → Default deny, error logged
+- Expected: Errors handled gracefully, user informed
+
+**Integration points**:
+- fast-agent framework → Hooks called correctly, tool execution works
+- Platform interface → Status updates sent, approvals requested
+- Approval rules → Rules queried correctly, approval requirement determined
+- Expected: All integrations work correctly
+
+### Module: approval.rules_manager
+**Happy path**:
+- Load rules from YAML → Query tool name → Return approval requirement
+- Expected: Rules load correctly, queries return expected values
+
+**Edge cases**:
+- Tool not in rules → Return default behavior
+- Invalid YAML → Load fails gracefully, use defaults
+- Expected: Edge cases handled, defaults used appropriately
+
+**Error cases**:
+- File not found → Use default rules, log warning
+- Invalid rule format → Skip invalid rules, use defaults
+- Expected: Errors don't crash system, defaults used
+
+**Integration points**:
+- agent.tool_agent → Rules queried correctly for each tool
+- Expected: Integration works, approval requirements determined correctly
+
+### Module: approval.approval_tracker
+**Happy path**:
+- Approval requested → Tracker stores → User responds → Approval resolved → Tracker cleans up
+- Expected: Approvals tracked correctly, resolved properly, cleaned up
+
+**Edge cases**:
+- Concurrent approvals → Each tracked separately, resolved independently
+- Approval timeout → Timeout handled, approval denied, tracker cleaned up
+- Expected: Concurrent scenarios handled correctly
+
+**Error cases**:
+- Approval ID not found → Handle gracefully, log error
+- Tracker cleanup fails → Log error, continue operation
+- Expected: Errors don't crash system, operation continues
+
+**Integration points**:
+- agent.tool_agent → Approvals tracked for tool calls
+- Platform connectors → Approvals resolved from button clicks
+- Expected: Integration works, approvals tracked and resolved correctly
+
+## Test Generation Guidelines
+
+**For Surgical Test Generator:**
+- Focus on critical paths: Message processing, tool approval, error handling
+- Test async operations thoroughly: Approval waiting, concurrent approvals
+- Test platform-specific behavior: Slack blocks, Discord embeds, button interactions
+- Test error recovery: API failures, network issues, invalid inputs
+- Use mocking for external dependencies: Slack API, Discord API, fast-agent framework (where appropriate)
+- Test configuration loading: YAML parsing, environment variable substitution, validation
+- Test integration points: Connector → Agent → Approval → Platform flow
+</test-strategy>
+
+---
+
+<architecture>
 ## System Components
 
-### 1. Platform Connectors Layer
-**Purpose:** Translate platform-specific events into standardized format and route responses back.
+### Component: Platform Connectors
+- **Purpose**: Translate platform-specific events into standardized format
+- **Technology**: Python async/await, Slack Bolt, discord.py
+- **Responsibilities**: Message reception, transmission, approval requests, button interactions, factoid checking
 
-**Components:**
-- `SlackConnector` (~50-100 lines)
-  - Handles Slack Bolt events (`app_mention`, `message`)
-  - Handles button interactions (`tool_approve`, `tool_deny`)
-  - Normalizes messages to `PlatformMessage` format
-  - Routes responses back to Slack with proper formatting
-  - Handles factoid checking before agent processing
+### Component: Agent Orchestration
+- **Purpose**: Manage AI agent interactions using fast-agent framework
+- **Technology**: fast-agent-mcp framework, Python async/await
+- **Responsibilities**: Agent definition, message processing, tool execution loop, conversation history, multi-modal content
 
-- `DiscordConnector` (~50-100 lines)
-  - Handles Discord.py events (message events)
-  - Handles button interactions (approve/deny)
-  - Normalizes messages to `PlatformMessage` format
-  - Routes responses back to Discord with proper formatting
-  - Handles factoid checking before agent processing
+### Component: Tool Approval Workflow
+- **Purpose**: Provide user control over tool execution
+- **Technology**: Python async/await, asyncio.Future, YAML configuration
+- **Responsibilities**: Approval rules management, tool usage reporting, approval request processing, result reporting, approval tracking
 
-**Interface:**
-```python
-class PlatformInterface:
-    async def send_message(self, thread_id: str, content: str) -> None
-    async def send_status(self, thread_id: str, status: str) -> None
-    async def request_approval(self, thread_id: str, tool_name: str, params: dict) -> bool
-    async def send_error(self, thread_id: str, error: str) -> None
-```
-
-### 2. Tool Flow Orchestration Layer
-**Purpose:** Provide full visibility and control over AI tool execution with approval workflows.
-
-**Component:**
-- `ChatPlatformToolAgent` (~200-300 lines)
-  - Extends fast-agent's `ToolAgent`
-  - Implements `ToolRunnerHookCapable` interface
-  - Provides `ToolRunnerHooks` implementation:
-    - `before_tool_call`: Approval workflow, tool reporting
-    - `after_tool_call`: Result reporting, error handling
-  - Manages approval rules from YAML config
-  - Handles async approval waiting
-  - Blocks tool execution via exceptions
-
-**Key Methods:**
-```python
-async def _handle_tool_approval(self, runner, tool_call):
-    # Report tool usage
-    # Check approval rules
-    # Request approval (async)
-    # Block if denied (raise exception)
-
-async def _report_tool_result(self, runner, message):
-    # Report tool results
-    # Handle errors
-    # Update approval messages
-```
-
-### 3. fast-agent Framework Core
-**Purpose:** Handle all AI orchestration, MCP tool management, and conversation logic.
-
-**Components:**
-- Agent definition via `@fast.agent` decorator
-- MCP server integration (automatic tool discovery)
-- Tool execution loop (automatic)
-- Conversation history management (automatic)
-- Multi-modal content support (automatic)
-- Error handling and retry logic (automatic)
-
-**Configuration:**
-- `fastagent.config.yaml`: Model settings, MCP servers, agent parameters
-- `fastagent.secrets.yaml`: API keys, credentials (gitignored)
-
-### 4. Approval Rules System
-**Purpose:** Configurable tool approval requirements.
-
-**Component:**
-- `approval_rules.yaml`: Tool-specific approval configuration
-- `ApprovalRulesManager`: Loads and queries approval rules
-
-**Format:**
-```yaml
-tools:
-  filesystem.delete_directory:
-    requires_approval: true
-  filesystem.write_file:
-    requires_approval: true
-  filesystem.read_file:
-    requires_approval: false
-```
-
-### 5. Factoid System
-**Purpose:** Simple string-triggered responses without Claude.
-
-**Component:**
-- `factoids.json`: Factoid configuration (existing)
-- `FactoidManager`: Checks factoids before agent processing (existing, minimal changes)
+### Component: Configuration Management
+- **Purpose**: Manage configuration files and secrets
+- **Technology**: YAML parsing, environment variable substitution
+- **Responsibilities**: Configuration loading, secret management, validation
 
 ## Data Models
 
 ### PlatformMessage
 ```python
 class PlatformMessage:
-    thread_id: str  # Platform-specific thread/conversation ID
-    user_id: str    # Platform-specific user ID
-    content: str    # Message text
-    platform: str   # "slack" | "discord" | ...
-    channel_id: str # Platform-specific channel ID
-    is_mention: bool # Whether bot was mentioned
+    thread_id: str      # Platform-specific thread/conversation ID
+    user_id: str        # Platform-specific user ID
+    content: str         # Message text
+    platform: str        # "slack" | "discord" | ...
+    channel_id: str     # Platform-specific channel ID
+    is_mention: bool   # Whether bot was mentioned
 ```
 
 ### ToolApprovalRequest
@@ -283,827 +757,112 @@ class ApprovalRules:
         return self.rules.get(tool_name, False)
 ```
 
-## APIs and Integrations
+## Technology Stack
 
-### fast-agent Framework API
-- `@fast.agent()`: Agent definition decorator
-- `agent.send(message)`: Send message to agent
-- `ToolRunnerHooks`: Hook interface for tool interception
-- `ToolAgent`: Base agent class with tool support
-
-### MCP Server Integration
-- Automatic tool discovery from configured servers
-- Tool execution via framework
-- Schema conversion (MCP → Anthropic format)
-- Multi-server support (5-6 servers, 90+ tools)
-
-### Platform APIs
-- **Slack:** Slack Bolt for Python (existing)
-- **Discord:** discord.py library (new)
-- **Future:** Platform-specific SDKs as needed
-
-## Infrastructure Requirements
-
-### Deployment
-- Docker containerization (existing)
-- Docker Compose for orchestration (existing)
-- DigitalOcean Droplet deployment (existing)
-- Systemd service for production (existing)
-
-### Configuration Management
-- Environment variables for secrets (`.env` file)
-- YAML configuration files:
-  - `fastagent.config.yaml` (version controlled)
-  - `fastagent.secrets.yaml` (gitignored)
-  - `approval_rules.yaml` (version controlled)
-  - `factoids.json` (version controlled, existing)
-
-### Dependencies
+**Languages & Frameworks:**
 - Python 3.11+ (existing)
-- fast-agent-mcp package (new)
+- fast-agent-mcp (new framework)
 - slack-bolt (existing)
-- discord.py (new)
-- fastmcp (existing, may be replaced by fast-agent)
-
-# Development Roadmap  
-
-## Phase 0: Verification & Proof of Concept
-**Scope:** Verify fast-agent framework capabilities and create minimal working example.
-
-**Requirements:**
-- Install and configure fast-agent-mcp
-- Create minimal agent with single MCP tool
-- Test ToolRunnerHooks with async operations
-- Verify tool blocking via exceptions
-- Test MCP server integration
-- Validate conversation history management
-
-**Deliverables:**
-- Working POC with single tool and approval hook
-- Verification report documenting framework capabilities
-- Technical feasibility assessment
-- Decision point: Proceed or use alternative approach
-
-**Success Criteria:**
-- fast-agent supports all required features
-- Hooks can wait for async approval
-- Tool blocking works via exceptions
-- MCP integration works with existing servers
-
-## Phase 1: Platform Connector Extraction
-**Scope:** Extract Slack-specific logic into reusable connector, create platform abstraction.
-
-**Requirements:**
-- Create `PlatformInterface` abstract base class
-- Implement `SlackConnector` class
-  - Extract event handling from `app.py`
-  - Extract message formatting logic
-  - Extract button interaction handling
-  - Normalize to `PlatformMessage` format
-- Update `app.py` to use `SlackConnector`
-- Maintain all existing Slack features
-- Test with existing Claude client (before fast-agent migration)
-
-**Deliverables:**
-- `PlatformInterface` abstract class
-- `SlackConnector` implementation (~50-100 lines)
-- Updated `app.py` using connector
-- Integration tests
-- Documentation
-
-**Success Criteria:**
-- All Slack features work with connector
-- Code organization improved
-- Platform abstraction ready for other platforms
-- No feature regression
-
-## Phase 2: Tool Flow Layer Implementation
-**Scope:** Create custom agent class with ToolRunnerHooks for approval workflow.
-
-**Requirements:**
-- Create `ChatPlatformToolAgent` class
-  - Extend fast-agent's `ToolAgent`
-  - Implement `ToolRunnerHookCapable` interface
-  - Implement `before_tool_call` hook:
-    - Report tool usage to platform
-    - Check approval rules
-    - Request approval (async)
-    - Block execution if denied
-  - Implement `after_tool_call` hook:
-    - Report tool results
-    - Handle errors
-    - Update approval messages
-- Create `ApprovalRulesManager` class
-  - Load rules from `approval_rules.yaml`
-  - Query approval requirements
-- Create `approval_rules.yaml` configuration
-- Implement approval tracking system
-  - Handle concurrent approvals
-  - Support timeouts
-  - Clean up after completion
-
-**Deliverables:**
-- `ChatPlatformToolAgent` class (~200-300 lines)
-- `ApprovalRulesManager` class
-- `approval_rules.yaml` configuration
-- Unit tests for hooks
-- Integration tests with fast-agent
-
-**Success Criteria:**
-- Tool approval hooks work correctly
-- Approval rules are configurable
-- Async approval waiting works
-- Tool blocking via exceptions works
-- Concurrent approvals handled correctly
-
-## Phase 3: fast-agent Core Migration
-**Scope:** Replace custom Claude client with fast-agent framework.
-
-**Requirements:**
-- Create fast-agent agent definition
-  - Use `@fast.agent` decorator
-  - Configure MCP servers
-  - Set model and parameters
-- Create `fastagent.config.yaml`
-  - Model configuration
-  - MCP server definitions (all 5-6 servers)
-  - Agent parameters
-- Create `fastagent.secrets.yaml`
-  - API keys for LLM providers
-  - MCP server credentials
-  - Environment variable references
-- Migrate conversation history management
-  - Verify thread-based isolation
-  - Test multi-turn conversations
-- Update platform connectors to use fast-agent
-- Remove old `ClaudeClient` code
-- Remove old `MCPClientWrapper` code (if fast-agent handles it)
-- Update session management (if needed)
-
-**Deliverables:**
-- fast-agent agent definition
-- `fastagent.config.yaml` configuration
-- `fastagent.secrets.yaml` for secrets
-- Updated platform connectors
-- Removed old orchestration code
-- Integration tests
-- Migration documentation
-
-**Success Criteria:**
-- All features work with fast-agent
-- MCP servers integrate correctly
-- Conversation history maintained
-- Performance maintained or improved
-- Code reduction achieved (~75%)
-
-## Phase 4: Discord Platform Support
-**Scope:** Add Discord as second platform to validate multi-platform architecture.
-
-**Requirements:**
-- Install discord.py library
-- Create `DiscordConnector` class
-  - Handle Discord message events
-  - Handle button interactions
-  - Normalize to `PlatformMessage` format
-  - Route responses back to Discord
-  - Handle factoid checking
-- Create Discord bot application
-- Configure Discord bot token
-- Test with fast-agent
-- Validate approval workflow in Discord
-- Test multi-platform simultaneous operation
-
-**Deliverables:**
-- `DiscordConnector` implementation (~50-100 lines)
-- Discord bot configuration
-- Integration tests
-- Multi-platform tests
-- Documentation
-
-**Success Criteria:**
-- Discord connector works correctly
-- Approval workflow works in Discord
-- Both platforms work simultaneously
-- Feature parity maintained across platforms
-
-## Phase 5: Testing & Optimization
-**Scope:** Comprehensive testing, performance optimization, and documentation.
-
-**Requirements:**
-- Create comprehensive test suite
-  - Unit tests for all custom components
-  - Integration tests for platform connectors
-  - Integration tests for tool flow layer
-  - End-to-end tests for full workflows
-- Performance testing
-  - Response time benchmarks
-  - Tool execution benchmarks
-  - Concurrent conversation handling
-  - Memory usage profiling
-- Error handling improvements
-  - Edge case testing
-  - Error recovery testing
-  - User-friendly error messages
-- Documentation updates
-  - Architecture documentation
-  - Configuration guide
-  - Migration guide
-  - API documentation
-  - Troubleshooting guide
-
-**Deliverables:**
-- Comprehensive test suite (≥80% coverage)
-- Performance benchmarks
-- Error handling improvements
-- Complete documentation
-- Code review and refactoring
-
-**Success Criteria:**
-- All tests pass
-- Performance meets requirements
-- Error handling robust
-- Documentation complete and accurate
-
-## Phase 6: Deployment & Migration
-**Scope:** Deploy to production and migrate from old implementation.
-
-**Requirements:**
-- Deploy to staging environment
-- Run parallel with existing bot (validation)
-- Gradual migration plan
-- Monitor performance and errors
-- Fix issues as they arise
-- Complete migration
-- Remove old code
-- Update deployment documentation
-
-**Deliverables:**
-- Staging deployment
-- Production deployment
-- Migration plan document
-- Monitoring setup
-- Rollback plan
-- Post-migration report
-
-**Success Criteria:**
-- Successful deployment
-- Zero downtime migration
-- All features working
-- Performance acceptable
-- No user-facing issues
-
-## Future Enhancements (Post-MVP)
-
-### Additional Platforms
-- Microsoft Teams connector
-- WhatsApp connector
-- Telegram connector
-- Generic webhook connector
-
-### Advanced Workflow Patterns
-- Tool chaining (output of one tool feeds into another)
-- Parallel tool execution optimization
-- Workflow orchestration for complex tasks
-- Agent-to-agent communication
-
-### Enhanced Features
-- Tool usage analytics
-- Performance monitoring dashboard
-- A/B testing for prompts
-- Custom approval flows (multi-approver, time-based)
-- Tool result caching
-- Conversation export/import
-
-# Logical Dependency Chain
-
-## Foundation Layer (Must Build First)
-
-### 1. Platform Abstraction Interface
-**Why first:** All other components depend on this. Defines the contract between platforms and core logic.
-
-**Scope:**
-- `PlatformInterface` abstract base class
-- `PlatformMessage` data model
-- Basic interface methods (send_message, request_approval, etc.)
-
-**Dependencies:** None
-
-**Can build upon:** Platform connectors, tool flow layer
-
-### 2. fast-agent Framework Integration
-**Why second:** Core orchestration layer. Everything else depends on this working.
-
-**Scope:**
-- fast-agent installation and configuration
-- Basic agent definition
-- MCP server integration
-- Tool discovery and execution
-
-**Dependencies:** None (framework handles everything)
-
-**Can build upon:** Tool flow layer, platform connectors
-
-### 3. Tool Flow Orchestration Layer
-**Why third:** Provides approval workflow that platform connectors need.
-
-**Scope:**
-- `ChatPlatformToolAgent` class
-- `ToolRunnerHooks` implementation
-- Approval rules system
-- Approval tracking
-
-**Dependencies:** fast-agent framework, platform interface
-
-**Can build upon:** Platform connectors (can now request approvals)
-
-## Platform Layer (Build After Foundation)
-
-### 4. Slack Connector (Refactor Existing)
-**Why fourth:** Existing platform, can validate architecture with known working system.
-
-**Scope:**
-- Extract Slack logic from `app.py`
-- Implement `SlackConnector` using `PlatformInterface`
-- Integrate with tool flow layer
-- Test with existing features
-
-**Dependencies:** Platform interface, tool flow layer
-
-**Can build upon:** Validates architecture, enables Discord connector
-
-### 5. Discord Connector (New Platform)
-**Why fifth:** Validates multi-platform architecture works.
-
-**Scope:**
-- Implement `DiscordConnector` using `PlatformInterface`
-- Integrate with tool flow layer
-- Test multi-platform operation
-
-**Dependencies:** Platform interface, tool flow layer, Slack connector (for validation)
-
-**Can build upon:** Proves multi-platform architecture
-
-## Integration Layer (Build After Core Components)
-
-### 6. Factoid System Integration
-**Why sixth:** Simple feature, validates platform connector integration.
-
-**Scope:**
-- Integrate existing factoid system with platform connectors
-- Test factoid checking before agent processing
-- Validate cooldowns and multiple responses
-
-**Dependencies:** Platform connectors
-
-**Can build upon:** Validates connector integration pattern
-
-### 7. Image Handling Integration
-**Why seventh:** Validates tool result handling and platform-specific APIs.
-
-**Scope:**
-- Integrate image generation tool results
-- Platform-specific image upload APIs
-- Test image posting workflow
-
-**Dependencies:** Platform connectors, tool flow layer
-
-**Can build upon:** Validates tool result handling pattern
-
-## Optimization Layer (Build After Everything Works)
-
-### 8. Error Handling Improvements
-**Why eighth:** Polish and robustness after core functionality works.
-
-**Scope:**
-- Enhanced error detection
-- User-friendly error messages
-- Error recovery mechanisms
-- Comprehensive error logging
-
-**Dependencies:** All previous components
-
-**Can build upon:** Production-ready system
-
-### 9. Testing & Documentation
-**Why last:** Can only test and document what exists.
-
-**Scope:**
-- Comprehensive test suite
-- Performance optimization
-- Complete documentation
-- Migration guides
-
-**Dependencies:** All previous components
-
-**Can build upon:** Production deployment
-
-## Atomic Feature Scoping
-
-Each phase is designed to be:
-- **Atomic:** Can be completed independently
-- **Testable:** Has clear success criteria
-- **Buildable:** Can be built upon in later phases
-- **Visible:** Provides working functionality users can see
-
-**Example - Phase 1 (Platform Connector):**
-- Atomic: Extracts Slack logic without breaking existing system
-- Testable: All Slack features still work
-- Buildable: Enables Discord connector using same pattern
-- Visible: Users see no change (transparent refactor)
-
-**Example - Phase 4 (Discord Support):**
-- Atomic: Adds Discord without affecting Slack
-- Testable: Discord works, Slack still works
-- Buildable: Proves multi-platform pattern for future platforms
-- Visible: Users can now use bot on Discord
-
-# Risks and Mitigations  
-
-## Technical Challenges
-
-### Risk 1: fast-agent Framework Limitations
-**Challenge:** fast-agent may not support all required features (async hooks, tool blocking, MCP integration).
-
-**Likelihood:** Medium
-**Impact:** High - Could block entire refactor
-
-**Mitigation:**
-- Phase 0 verification before committing to refactor
-- Create minimal POC to validate all critical features
-- Have fallback plan: Hybrid approach (extract connectors, keep current orchestration)
-- Monitor fast-agent development and community
-
-**Contingency:** If framework doesn't support required features, use hybrid approach:
-- Extract platform connectors (still valuable)
-- Keep current orchestration code
-- Add hook-like interface for tool approval
-- Get multi-platform support without full framework dependency
-
-### Risk 2: Tool Approval Workflow Complexity
-**Challenge:** Async approval waiting in hooks may be complex or not supported.
-
-**Likelihood:** Low
-**Impact:** High - Core feature
-
-**Mitigation:**
-- Verify hook async support in Phase 0
-- Test approval workflow thoroughly in POC
-- Use asyncio.Future for approval tracking
-- Implement timeout handling
-- Test concurrent approval scenarios
-
-**Contingency:** If hooks don't support async waiting:
-- Use synchronous approval (blocking, less ideal)
-- Or implement approval outside hooks (pre-process tool calls)
-
-### Risk 3: MCP Integration Issues
-**Challenge:** fast-agent may not integrate well with existing MCP servers or FastMCP setup.
-
-**Likelihood:** Low
-**Impact:** Medium - Could require MCP server changes
-
-**Mitigation:**
-- Test MCP integration early in Phase 0
-- Verify all existing MCP servers work
-- Test persistent connections (STDIO servers)
-- Maintain FastMCP wrapper if needed
-
-**Contingency:** If MCP integration issues:
-- Keep FastMCP wrapper as adapter
-- Or configure MCP servers differently for fast-agent
-
-### Risk 4: Performance Degradation
-**Challenge:** Framework overhead may slow down responses.
-
-**Likelihood:** Low
-**Impact:** Medium - User experience
-
-**Mitigation:**
-- Performance testing in Phase 5
-- Benchmark before and after migration
-- Optimize hot paths if needed
-- Use framework's performance features
-
-**Contingency:** If performance issues:
-- Profile to identify bottlenecks
-- Optimize custom code
-- Consider framework configuration tuning
-
-## MVP Definition
-
-### Core MVP (Must Have)
-- Slack platform support (existing)
-- Tool approval workflow
-- MCP tool integration
-- Thread-aware conversations
-- Factoid system
-- Error handling
-
-### Enhanced MVP (Should Have)
-- Discord platform support
-- Image handling
-- Enhanced error messages
-- Performance optimization
-
-### Nice to Have (Can Defer)
-- Additional platforms (Teams, WhatsApp)
-- Advanced workflow patterns
-- Analytics and monitoring
-- Custom approval flows
-
-**MVP Strategy:** Get to working Slack + fast-agent as quickly as possible, then add Discord to validate multi-platform. Everything else can be added incrementally.
-
-## Resource Constraints
-
-### Risk 5: Learning Curve
-**Challenge:** Team needs to learn fast-agent framework.
-
-**Likelihood:** Medium
-**Impact:** Medium - Slows development
-
-**Mitigation:**
-- Phase 0 includes learning and experimentation
-- Use framework documentation and examples
-- Start with simple POC before complex features
-- Leverage framework community
-
-**Contingency:** If learning curve is too steep:
-- Extend Phase 0 for more learning time
-- Consider hybrid approach (less framework dependency)
-- Get framework support/consulting if available
-
-### Risk 6: Framework Stability
-**Challenge:** fast-agent may have bugs or breaking changes.
-
-**Likelihood:** Low
-**Impact:** Medium - Could cause issues
-
-**Mitigation:**
-- Pin framework version
-- Monitor framework updates
-- Test thoroughly before upgrading
-- Have rollback plan
-- Contribute bug reports/fixes if needed
-
-**Contingency:** If framework has critical bugs:
-- Work around bugs in custom code
-- Wait for fixes before proceeding
-- Consider alternative approaches
-
-### Risk 7: Feature Parity Loss
-**Challenge:** Some existing features may not work with fast-agent.
-
-**Likelihood:** Low
-**Impact:** High - User experience
-
-**Mitigation:**
-- Comprehensive feature mapping before migration
-- Test all features in Phase 5
-- Maintain parallel run during migration
-- Have feature parity checklist
-
-**Contingency:** If features don't work:
-- Implement workarounds in custom code
-- Request framework features if needed
-- Keep old implementation for missing features (temporary)
+- discord.py (new library)
+
+**Key Libraries:**
+- fast-agent-mcp: Agent orchestration framework
+- slack-bolt: Slack platform integration
+- discord.py: Discord platform integration
+- PyYAML: Configuration file parsing
+- python-dotenv: Environment variable management
+
+**Decision: fast-agent Framework**
+- **Rationale**: Handles AI orchestration, tool execution loops, conversation history, MCP integration automatically. Reduces custom code by 75%.
+- **Trade-offs**: Dependency on external framework, learning curve, framework stability risk
+- **Alternatives considered**: 
+  - Keep current custom implementation (rejected: too much code, not multi-platform)
+  - Use Anthropic Agent SDK (rejected: doesn't support MCP, less control)
+  - Hybrid approach (fallback: extract connectors, keep current orchestration)
+
+**Decision: Platform Abstraction Interface**
+- **Rationale**: Enables multi-platform support with minimal code duplication. Clear separation of concerns.
+- **Trade-offs**: Additional abstraction layer, slight overhead
+- **Alternatives considered**:
+  - Platform-specific implementations (rejected: code duplication)
+  - Generic webhook approach (rejected: loses platform-specific features like buttons)
+
+**Decision: YAML Configuration Files**
+- **Rationale**: Human-readable, version-controllable, supports environment variable substitution
+- **Trade-offs**: Requires YAML parsing, less type-safe than Python config
+- **Alternatives considered**:
+  - Python config files (rejected: harder to edit, secrets in code)
+  - JSON config (rejected: less readable, no comments)
+  - Environment variables only (rejected: too many variables, hard to manage)
+</architecture>
+
+---
+
+<risks>
+## Technical Risks
+
+**Risk**: fast-agent Framework Limitations
+- **Impact**: High - Could block entire refactor
+- **Likelihood**: Medium
+- **Mitigation**: Phase 0 verification, POC before committing, fallback plan (hybrid approach)
+- **Fallback**: Extract platform connectors, keep current orchestration, add hook-like interface
+
+**Risk**: Tool Approval Workflow Complexity
+- **Impact**: High - Core feature
+- **Likelihood**: Low
+- **Mitigation**: Verify hook async support in Phase 0, test thoroughly in POC, use asyncio.Future
+- **Fallback**: Synchronous approval (blocking) or implement approval outside hooks
+
+**Risk**: MCP Integration Issues
+- **Impact**: Medium - Could require MCP server changes
+- **Likelihood**: Low
+- **Mitigation**: Test MCP integration early, verify all servers work, maintain FastMCP wrapper if needed
+- **Fallback**: Keep FastMCP wrapper as adapter, configure servers differently
+
+**Risk**: Performance Degradation
+- **Impact**: Medium - User experience
+- **Likelihood**: Low
+- **Mitigation**: Performance testing in Phase 4, benchmark before/after, optimize hot paths
+- **Fallback**: Profile to identify bottlenecks, optimize custom code, tune framework config
 
 ## Dependency Risks
 
-### Risk 8: MCP Server Compatibility
-**Challenge:** Existing MCP servers may not work with fast-agent's MCP integration.
+**Risk**: fast-agent Framework Stability
+- **Impact**: Medium - Could cause issues
+- **Likelihood**: Low
+- **Mitigation**: Pin framework version, monitor updates, test before upgrading, contribute fixes
+- **Fallback**: Work around bugs, wait for fixes, consider alternatives
 
-**Likelihood:** Low
-**Impact:** Medium - Could require server changes
+**Risk**: MCP Server Compatibility
+- **Impact**: Medium - Could require server changes
+- **Likelihood**: Low
+- **Mitigation**: Test all servers in Phase 0, verify compatibility early
+- **Fallback**: Update server configs, use adapter layer, find alternatives
 
-**Mitigation:**
-- Test all MCP servers in Phase 0
-- Verify server compatibility early
-- Work with MCP server maintainers if needed
+**Risk**: Platform API Changes
+- **Impact**: Low - Usually backward compatible
+- **Likelihood**: Low
+- **Mitigation**: Pin SDK versions, monitor deprecation notices
+- **Fallback**: Update connectors, usually straightforward
 
-**Contingency:** If servers don't work:
-- Update server configurations
-- Use adapter layer if needed
-- Find alternative servers if necessary
+## Scope Risks
 
-### Risk 9: Platform API Changes
-**Challenge:** Slack or Discord APIs may change during development.
+**Risk**: Feature Parity Loss
+- **Impact**: High - User experience
+- **Likelihood**: Low
+- **Mitigation**: Comprehensive feature mapping, test all features, parallel run during migration
+- **Fallback**: Implement workarounds, request framework features, keep old implementation temporarily
 
-**Likelihood:** Low
-**Impact:** Low - Usually backward compatible
+**Risk**: Underestimation of Complexity
+- **Impact**: Medium - Timeline delays
+- **Likelihood**: Medium
+- **Mitigation**: Phase 0 verification reduces unknowns, comprehensive testing, iterative approach
+- **Fallback**: Extend timeline, reduce scope, prioritize MVP features
+</risks>
 
-**Mitigation:**
-- Pin platform SDK versions
-- Monitor API deprecation notices
-- Test with latest SDK versions
+---
 
-**Contingency:** If APIs change:
-- Update platform connectors
-- Usually straightforward changes
-
-# Appendix  
-
-## Research Findings
-
-### fast-agent Framework Analysis
-- **Documentation:** Comprehensive at https://fast-agent.ai/
-- **MCP Support:** Native MCP server integration
-- **Tool Support:** Automatic tool discovery and execution
-- **Hooks:** ToolRunnerHooks for tool interception
-- **Multi-modal:** Supports files, images, PDFs
-- **History Management:** Automatic conversation history
-- **Workflows:** Supports chaining, parallelism, orchestration
-
-### Current Implementation Analysis
-- **Total Lines:** ~2,250 lines of custom code
-- **Components:**
-  - `app.py`: ~800 lines (Slack integration)
-  - `claude_client.py`: ~570 lines (API wrapper, tool loop)
-  - `mcp_client.py`: ~400 lines (MCP integration)
-  - `tool_approval.py`: ~370 lines (approval workflow)
-  - `session_manager.py`: ~110 lines (history management)
-- **MCP Servers:** 5-6 servers, ~90 tools
-- **Features:** Thread-aware, tool approval, factoids, image handling
-
-### Code Reduction Analysis
-- **Current:** ~2,250 lines
-- **Target:** ~500 lines
-- **Reduction:** 75%
-- **Breakdown:**
-  - Platform connectors: ~150 lines (50 per platform × 3)
-  - Tool flow layer: ~200-300 lines
-  - Configuration: YAML files
-  - Framework: Handles everything else
-
-## Technical Specifications
-
-### fast-agent Agent Definition
-```python
-from fast_agent import FastAgent
-
-fast = FastAgent("Butabot Agent")
-
-@fast.agent(
-    name="butabot",
-    instruction="You are a helpful AI assistant for development tasks.",
-    servers=["filesystem", "drupal", "brave-search"],
-    model="claude-sonnet-4-5",
-    use_history=True,
-    request_params=RequestParams(max_tokens=4096)
-)
-```
-
-### ToolRunnerHooks Implementation
-```python
-from fast_agent.types import ToolRunnerHooks, ToolRunnerHookCapable
-
-class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable):
-    def __init__(self, platform_interface, approval_rules):
-        self.platform = platform_interface
-        self.approval_rules = approval_rules
-        self._hooks = ToolRunnerHooks(
-            before_tool_call=self._handle_tool_approval,
-            after_tool_call=self._report_tool_result
-        )
-    
-    @property
-    def tool_runner_hooks(self):
-        return self._hooks
-    
-    async def _handle_tool_approval(self, runner, tool_call):
-        await self.platform.send_status(f"🔧 Using tool: {tool_call.name}")
-        if self.approval_rules.requires_approval(tool_call.name):
-            approved = await self.platform.request_approval(
-                tool_name=tool_call.name,
-                parameters=tool_call.input
-            )
-            if not approved:
-                raise ToolApprovalDenied(f"User denied: {tool_call.name}")
-    
-    async def _report_tool_result(self, runner, message):
-        if message.tool_results:
-            for tool_name, result in message.tool_results.items():
-                await self.platform.send_status(f"✅ {tool_name} completed")
-```
-
-### Platform Interface Specification
-```python
-from abc import ABC, abstractmethod
-
-class PlatformInterface(ABC):
-    @abstractmethod
-    async def send_message(self, thread_id: str, content: str) -> None:
-        """Send a message to the platform."""
-        pass
-    
-    @abstractmethod
-    async def send_status(self, thread_id: str, status: str) -> None:
-        """Send a status update (tool usage, results, etc.)."""
-        pass
-    
-    @abstractmethod
-    async def request_approval(
-        self, 
-        thread_id: str, 
-        tool_name: str, 
-        parameters: dict
-    ) -> bool:
-        """Request tool approval from user. Returns True if approved."""
-        pass
-    
-    @abstractmethod
-    async def send_error(self, thread_id: str, error: str) -> None:
-        """Send an error message to the platform."""
-        pass
-```
-
-### Configuration File Formats
-
-#### fastagent.config.yaml
-```yaml
-# Model configuration
-model: claude-sonnet-4-5
-max_tokens: 4096
-
-# MCP Servers
-mcp:
-  servers:
-    filesystem:
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"]
-    drupal:
-      command: docker
-      args: [
-        "run", "-i", "--rm",
-        "-e", "DRUPAL_AUTH_USER",
-        "-e", "DRUPAL_AUTH_PASSWORD",
-        "--network=host",
-        "ghcr.io/omedia/mcp-server-drupal:latest",
-        "--drupal-url=${DRUPAL_BASE_URL}"
-      ]
-      env:
-        DRUPAL_AUTH_USER: ${DRUPAL_AUTH_USER}
-        DRUPAL_AUTH_PASSWORD: ${DRUPAL_AUTH_PASSWORD}
-```
-
-#### approval_rules.yaml
-```yaml
-# Tool-specific approval requirements
-tools:
-  # Filesystem tools
-  filesystem.delete_directory:
-    requires_approval: true
-  filesystem.write_file:
-    requires_approval: true
-  filesystem.read_file:
-    requires_approval: false
-  
-  # Drupal tools
-  drupal.enable_module:
-    requires_approval: true
-  drupal.clear_cache:
-    requires_approval: false
-  
-  # Default behavior
-  default:
-    requires_approval: false
-```
-
-## Migration Strategy Details
-
-### Parallel Run Approach
-1. Deploy new implementation alongside old
-2. Route subset of traffic to new implementation
-3. Monitor for issues
-4. Gradually increase traffic
-5. Complete migration when confident
-6. Remove old implementation
-
-### Rollback Plan
-1. Keep old implementation available
-2. Can switch back via configuration
-3. Database/state compatibility maintained
-4. No data loss during rollback
-
-## Success Metrics
-
-### Code Metrics
-- Custom code: ≤500 lines (75% reduction)
-- Platform connectors: ≤100 lines each
-- Tool flow layer: ≤300 lines
-- Test coverage: ≥80%
-
-### Performance Metrics
-- Response time: ≤ current implementation
-- Tool execution: No degradation
-- Memory usage: Efficient
-- Concurrent conversations: Supported
-
-### Feature Metrics
-- Feature parity: 100%
-- Platform support: 2+ platforms
-- Tool approval: 100% working
-- Error handling: User-friendly
-
+<appendix>
 ## References
 
 - [fast-agent Documentation](https://fast-agent.ai/)
@@ -1112,4 +871,24 @@ tools:
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - Current Architecture: `docs/butabot-multi-platform-bot-architecture.md`
 - Current Implementation: `bot/` directory
-</PRD>
+
+## Glossary
+
+- **MCP**: Model Context Protocol - Standard protocol for tool integration
+- **ToolRunnerHooks**: fast-agent interface for intercepting tool execution
+- **Platform Connector**: Module that translates platform-specific events to standardized format
+- **Tool Approval**: User control mechanism for AI tool execution
+- **Factoid**: Simple string-triggered response without invoking Claude
+- **Thread ID**: Platform-specific identifier for conversation threads
+
+## Open Questions
+
+1. Does fast-agent support ToolRunnerHooks with async operations? (To be verified in Phase 0)
+2. Can hooks block tool execution via exceptions? (To be verified in Phase 0)
+3. How does fast-agent handle MCP server persistent connections? (To be verified in Phase 0)
+4. What is the exact API for ToolRunnerHooks? (To be verified in Phase 0)
+5. How does fast-agent handle conversation history per thread? (To be verified in Phase 0)
+6. Should we maintain FastMCP wrapper or rely entirely on fast-agent? (Decision in Phase 0)
+7. What is the optimal approval timeout? (Currently 5 minutes, may need adjustment)
+8. Should approval rules support tool categories? (Future enhancement)
+</appendix>
