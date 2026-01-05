@@ -98,16 +98,16 @@
         "id": 6,
         "title": "Create agent/agent_config.py and ChatPlatformToolAgent",
         "description": "Define fast-agent with MCP config and custom ChatPlatformToolAgent using ToolRunnerHooks for approval integration.",
-        "details": "agent/agent_config.py: def create_agent() -> ToolAgent. Use @fast.agent from config. agent/tool_agent.py: class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable): async def before_tool_call(self, tool_use_id, tool_name, tool_input): if rules.requires(tool_name): approval_id = tracker.create(...); approved = await tracker.get_future(approval_id); if not approved: raise ToolApprovalDenied(). Integrate platform_interface.send_status().",
-        "testStrategy": "Integration tests: agent creation, MCP tool discovery, hook interception (mock platform/rules/tracker), approval block via exception, result reporting.",
-        "priority": "high",
+        "status": "pending",
         "dependencies": [
           2,
           3,
           4,
           5
         ],
-        "status": "pending",
+        "priority": "high",
+        "details": "agent/agent_config.py: def create_agent() -> ToolAgent. Use @fast.agent from config. agent/tool_agent.py: class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable): Implement ToolRunnerHooks interface methods - specifically async def before_tool_call(self, tool_use_id, tool_name, tool_input) and async def after_tool_call(self, tool_use_id, tool_name, tool_input, result). In before_tool_call: if rules.requires(tool_name): approval_id = tracker.create(...); approved = await tracker.get_future(approval_id); if not approved: raise ToolApprovalDenied(). Integrate platform_interface.send_status() for status updates.",
+        "testStrategy": "Integration tests: agent creation, MCP tool discovery, ToolRunnerHooks interception (mock platform/rules/tracker), approval block via exception, result reporting. Verify both before_tool_call and after_tool_call hooks are properly invoked in the fast-agent tool execution flow.",
         "subtasks": [
           {
             "id": 1,
@@ -121,24 +121,24 @@
           {
             "id": 2,
             "title": "Define ChatPlatformToolAgent base class",
-            "description": "Create agent/tool_agent.py with class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable) integrating platform_interface for status updates.",
+            "description": "Create agent/tool_agent.py with class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable) implementing ToolRunnerHooks interface for tool execution interception.",
             "dependencies": [
               1
             ],
-            "details": "Inherit from ToolAgent and ToolRunnerHookCapable. Initialize platform_interface in __init__. Add async methods for status messaging via platform_interface.send_status(). Ensure hook compatibility.",
+            "details": "Inherit from ToolAgent and ToolRunnerHookCapable. Initialize platform_interface in __init__. Implement the ToolRunnerHooks interface methods (before_tool_call and after_tool_call) from fast-agent framework's hook system. Add async methods for status messaging via platform_interface.send_status().\n<info added on 2026-01-05T12:13:14.423Z>\nToolRunnerHookCapable is a specific interface from the fast-agent framework that enables tool execution interception. It requires implementing the ToolRunnerHooks interface methods (before_tool_call and after_tool_call), which are called during the framework's tool execution flow. These hooks are distinct from other hook patterns like PreToolUse/PostToolUse and are specifically designed to integrate with fast-agent's tool execution pipeline. When implementing ChatPlatformToolAgent, these hooks provide the critical interception points needed for approval flows and status messaging to be properly integrated with the fast-agent framework's execution model.\n</info added on 2026-01-05T12:13:14.423Z>",
             "status": "pending",
-            "testStrategy": "Unit test: instantiation, inheritance verification, platform_interface integration mock."
+            "testStrategy": "Unit test: instantiation, inheritance verification, ToolRunnerHookCapable interface implementation, platform_interface integration mock."
           },
           {
             "id": 3,
-            "title": "Implement before_tool_call approval workflow",
-            "description": "Add async def before_tool_call(self, tool_use_id, tool_name, tool_input) with rules check, tracker approval, and exception on denial.",
+            "title": "Implement before_tool_call hook method",
+            "description": "Add async def before_tool_call(self, tool_use_id, tool_name, tool_input) with rules check, tracker approval, and exception on denial as part of ToolRunnerHooks interface.",
             "dependencies": [
               2
             ],
-            "details": "Check if rules.requires(tool_name), create approval_id = tracker.create(...), await approved = tracker.get_future(approval_id), raise ToolApprovalDenied() if not approved. Call platform_interface.send_status() for updates.",
+            "details": "Implement the before_tool_call method from ToolRunnerHookCapable interface. Check if rules.requires(tool_name), create approval_id = tracker.create(...), await approved = tracker.get_future(approval_id), raise ToolApprovalDenied() if not approved. Call platform_interface.send_status() for updates.\n<info added on 2026-01-05T12:13:21.186Z>\nImplement the before_tool_call method as part of the fast-agent ToolRunnerHooks interface. This method is called by the fast-agent framework before a tool is executed, not to be confused with any PreToolUse hooks mentioned elsewhere. The method signature follows the ToolRunnerHookCapable interface specification:\n\n```python\nasync def before_tool_call(self, tool_use_id: str, tool_name: str, tool_input: dict) -> None:\n    \"\"\"Hook called by fast-agent framework before tool execution\"\"\"\n    if self.rules.requires_approval(tool_name):\n        approval_id = self.tracker.create(\n            thread_id=self.thread_id,\n            tool_name=tool_name,\n            tool_input=tool_input,\n            tool_use_id=tool_use_id\n        )\n        \n        # Send status update that approval is pending\n        await self.platform_interface.send_status(\n            thread_id=self.thread_id,\n            message=f\"Waiting for approval to use tool: {tool_name}\"\n        )\n        \n        # Wait for approval decision\n        try:\n            approved = await self.tracker.get_future(approval_id)\n            if not approved:\n                raise ToolApprovalDenied(f\"Use of tool '{tool_name}' was denied\")\n        except asyncio.TimeoutError:\n            raise ToolApprovalDenied(f\"Approval for tool '{tool_name}' timed out\")\n```\n</info added on 2026-01-05T12:13:21.186Z>",
             "status": "pending",
-            "testStrategy": "Integration test: mock rules/tracker/platform, verify hook interception, approval flow (approve/deny), exception raised on denial."
+            "testStrategy": "Integration test: mock rules/tracker/platform, verify ToolRunnerHooks hook interception, approval flow (approve/deny), exception raised on denial."
           },
           {
             "id": 4,
@@ -150,6 +150,17 @@
             "details": "class ToolApprovalDenied(Exception): pass. Ensure exception carries tool_name and reason. Add platform_interface.send_status('approval_denied') in workflow. Include in agent test suite.",
             "status": "pending",
             "testStrategy": "Unit test exception raising/handling, integration test full workflow block via exception, coverage for deny path."
+          },
+          {
+            "id": 5,
+            "title": "Implement after_tool_call hook method",
+            "description": "Add async def after_tool_call(self, tool_use_id, tool_name, tool_input, result) method to complete the ToolRunnerHooks interface implementation.",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement the after_tool_call method from ToolRunnerHookCapable interface. This method is called after a tool execution completes. Use platform_interface.send_status() to report tool execution results. Handle both successful executions and failures appropriately.",
+            "status": "pending",
+            "testStrategy": "Unit test: verify after_tool_call is called after tool execution, test with both successful and failed tool executions, verify platform status updates."
           }
         ]
       },
