@@ -1,5 +1,6 @@
-# Use Python 3.11 with Node.js for MCP servers
-FROM python:3.11-slim
+# Use Python 3.13.5 with Node.js for MCP servers
+# Per fast-agent.ai recommendation: "If you have multiple Python versions, use --python 3.13.5 to ensure you get the latest version of fast-agent."
+FROM python:3.13.5-slim
 
 # Install Node.js and npm (required for MCP servers), Docker CLI (for STDIO MCP servers), and procps (for health check)
 RUN apt-get update && apt-get install -y \

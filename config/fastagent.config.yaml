@@ -1,31 +1,188 @@
-# Fast Agent MCP Configuration
+# Fast Agent Configuration
 # This file configures the fast-agent-mcp framework integration
+# Fast-agent automatically loads this file from the project root
+# Secrets should be kept in fastagent.secrets.yaml (gitignored)
 
-# Claude model to use
-model: "claude-3-5-sonnet-20241022"
+# Default model for all agents (can be overridden per agent)
+# Model precedence: agent decorator > command line > this default > FAST_AGENT_MODEL env var > system default (gpt-5-mini.low)
+default_model: "anthropic.claude-sonnet-4-5"  # or use aliases like "sonnet", "haiku", "gpt-4o", etc.
 
-# Maximum tokens per response
-max_tokens: 4096
+# LLM Provider Configurations
+# API keys can be set here or in fastagent.secrets.yaml (recommended)
+# Environment variables can also be used (e.g., ANTHROPIC_API_KEY)
 
-# MCP servers configuration
+anthropic:
+  # api_key: "${ANTHROPIC_API_KEY}"  # Set in fastagent.secrets.yaml or use env var
+  # base_url: "https://api.anthropic.com/v1"  # Default, only include if required
+
+openai:
+  # api_key: "${OPENAI_API_KEY}"  # Set in fastagent.secrets.yaml or use env var
+  # base_url: "https://api.openai.com/v1"  # Default, only include if required
+
+# Hugging Face (uses HF_TOKEN env var automatically for MCP servers)
+# hf:
+#   api_key: "${HF_TOKEN}"
+#   base_url: "https://router.huggingface.co/v1"  # Default
+#   default_provider: "groq"  # Optional: groq, fireworks-ai, cerebras, etc.
+
+# Google
+# google:
+#   api_key: "${GOOGLE_API_KEY}"
+#   base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+
+# Azure OpenAI (see rules for detailed configuration options)
+# azure:
+#   api_key: "${AZURE_OPENAI_API_KEY}"
+#   resource_name: "your-resource-name"  # OR use base_url (not both)
+#   azure_deployment: "deployment-name"  # Required
+#   api_version: "2023-05-15"  # Optional
+
+# Groq
+# groq:
+#   api_key: "${GROQ_API_KEY}"
+#   base_url: "https://api.groq.com/openai/v1"
+
+# DeepSeek
+# deepseek:
+#   api_key: "${DEEPSEEK_API_KEY}"
+#   base_url: "https://api.deepseek.com/v1"
+
+# XAI Grok
+# xai:
+#   api_key: "${XAI_API_KEY}"
+#   base_url: "https://api.x.ai/v1"
+
+# Generic OpenAI / Ollama
+# generic:
+#   api_key: "ollama"  # Default for Ollama
+#   base_url: "http://localhost:11434/v1"  # Default for Ollama
+
+# OpenRouter
+# openrouter:
+#   api_key: "${OPENROUTER_API_KEY}"
+#   base_url: "https://openrouter.ai/api/v1"
+
+# TensorZero
+# tensorzero:
+#   base_url: "http://localhost:3000"  # Optional, only include to override
+
+# Aliyun
+# aliyun:
+#   api_key: "${ALIYUN_API_KEY}"
+#   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# AWS Bedrock
+# bedrock:
+#   region: "us-east-1"  # Required
+#   profile: "default"  # Optional, only needed on local machines
+
+# Logging Configuration
+# Controls the verbosity and display of fast-agent output
+logger:
+  type: "console"  # "none", "console", "file", or "http"
+  level: "info"  # "debug", "info", "warning", or "error"
+  progress_display: false  # Disable progress display
+  show_chat: false  # Chat messages on console
+  show_tools: true  # MCP Server tool calls on console
+  truncate_tools: true  # Truncate long tool calls in display
+  enable_markup: true  # Enable rich library markup
+  # streaming: "none"  # "markdown", "plain", or "none" - set to "none" to disable streaming output
+
+# MCP UI Configuration
+mcp_ui_output_dir: ".fast-agent/ui"  # Where to write MCP-UI HTML files
+mcp_ui_mode: "enabled"  # "disabled", "enabled", or "auto" to automatically open links
+
+# Agent Skills Configuration
+# skills:
+#   directories:
+#     - ".fast-agent/skills"
+#     - ".claude/skills"
+#   marketplace_urls:
+#     - "https://github.com/huggingface/skills"
+#     - "https://github.com/anthropics/skills"
+
+# MCP Servers Configuration
 # Each server entry follows the fast-agent MCP server configuration format
+# Secrets can be kept in fastagent.secrets.yaml using ${VAR_NAME} syntax
 mcp:
-  servers:
-    # Example filesystem server (adjust paths as needed)
-    # filesystem:
-    #   command: "npx"
-    #   args:
-    #     - "-y"
-    #     - "@modelcontextprotocol/server-filesystem"
-    #     - "/app/data"
-    #   env: {}
-    
-    # Add your MCP servers here
-    # Use ${VAR_NAME} syntax for environment variable substitution
-    # Example:
-    # my-server:
-    #   command: "python"
-    #   args: ["./server.py"]
-    #   env:
-    #     API_KEY: "${MY_API_KEY}"
-
+  servers: {}  # Empty dictionary - add servers here as needed
+  
+  # Example: STDIO Server (filesystem)
+  filesystem:
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/app/data"  # Working directory for the filesystem server
+    env: {}
+  
+  # Example: STDIO Server with environment variables
+  # brave_search:
+  #   command: "npx"
+  #   args:
+  #     - "-y"
+  #     - "@modelcontextprotocol/server-brave-search"
+  #   env:
+  #     BRAVE_API_KEY: "${BRAVE_API_KEY}"  # Set in fastagent.secrets.yaml
+  
+  # Example: HTTP Server
+  # remote_server:
+  #   transport: "http"
+  #   url: "http://localhost:8000/mcp"
+  #   headers:
+  #     Authorization: "Bearer ${REMOTE_API_KEY}"  # Set in fastagent.secrets.yaml
+  #   # Optional: timeout for SSE sessions
+  #   read_transport_sse_timeout_seconds: 300
+  
+  # Example: SSE Server
+  # sse_server:
+  #   transport: "sse"
+  #   url: "http://localhost:8001/sse"
+  
+  # Example: HuggingFace MCP Server (HF_TOKEN automatically applied)
+  # huggingface:
+  #   transport: "http"
+  #   url: "https://huggingface.co/mcp"
+  #   # HF_TOKEN from environment automatically applied!
+  
+  # Example: Server with implementation spoofing (for testing)
+  # test_server:
+  #   transport: "http"
+  #   url: "http://localhost:8000/mcp"
+  #   implementation:
+  #     name: "claude-code"
+  #     version: "1.0.99"
+  
+  # Example: Server with MCP Roots
+  # data_server:
+  #   transport: "http"
+  #   url: "http://localhost:8000/mcp"
+  #   roots:
+  #     uri: "file:///app/data"
+  #     name: "Data Directory"
+  #     server_uri_alias: "/mnt/data"  # Optional: present consistent path to server
+  
+  # Example: Server with Sampling
+  # sampling_server:
+  #   transport: "http"
+  #   url: "http://localhost:8000/mcp"
+  #   sampling:
+  #     model: "anthropic.claude-sonnet-4-5"  # Model for sampling requests
+  
+  # Example: Server with Elicitation configuration
+  # elicitation_server:
+  #   transport: "http"
+  #   url: "http://localhost:8000/mcp"
+  #   elicitation:
+  #     mode: "forms"  # "forms" (default), "auto_cancel", or "none"
+  
+  # Example: Server with OAuth authentication
+  # oauth_server:
+  #   transport: "http"
+  #   url: "https://example-server.modelcontextprotocol.io/mcp"
+  #   auth:
+  #     oauth: true  # Default true for HTTP/SSE
+  #     persist: "keyring"  # "keyring" (default) or "memory"
+  #     redirect_port: 3030  # Default
+  #     redirect_path: "/callback"  # Default
+  #     # scope: "user"  # Optional, server defaults used if omitted

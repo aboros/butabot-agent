@@ -2,6 +2,40 @@
 alwaysApply: true
 ---
 
+# Installation and Version Requirements
+
+## Python Version and Package Requirements
+
+**Important:** According to [fast-agent.ai](https://fast-agent.ai), use **Python 3.13.5** to ensure you get the latest version of fast-agent:
+
+```bash
+uv tool install fast-agent-mcp --python 3.13.5
+```
+
+For Docker containers, use:
+```dockerfile
+FROM python:3.13.5-slim
+```
+
+## Import Paths - Version Dependency
+
+The `fast-agent-mcp` package structure varies by version:
+
+- **Python 3.13.5 + fast-agent-mcp 0.4.22+**: Uses `fast_agent` module (current/recommended)
+  ```python
+  from fast_agent import Prompt
+  from fast_agent.core.fastagent import FastAgent
+  from fast_agent import PromptMessageExtended, load_prompt
+  ```
+
+- **Python 3.11 + older fast-agent-mcp (< 0.4.22)**: May use `mcp_agent` module (deprecated)
+  ```python
+  # DO NOT USE - This is for older versions only
+  from mcp_agent.core.prompt import Prompt
+  ```
+
+**Always use `fast_agent` imports** as shown in the examples below. The package installs as `fast_agent` in current versions (0.4.22+) with Python 3.13.5.
+
 # Files and Resources
 
 ## Attaching Files

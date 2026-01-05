@@ -37,6 +37,9 @@ Thumbs.db
 # Data directory (contains files created by MCP tools and agent work)
 data/
 
+# Session history (conversation persistence)
+.sessions/
+
 
 logs
 npm-debug.log*

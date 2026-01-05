@@ -1,13 +1,17 @@
 """ChatPlatformToolAgent with ToolRunnerHooks for approval integration."""
 
 import asyncio
+import logging
 from typing import Any, Dict, Optional
 
 from connectors.interface import PlatformInterface
 
 from .exceptions import ToolApprovalDenied
+from .session_manager import SessionManager
 from approval.approval_tracker import ApprovalTracker
 from approval.rules_manager import ApprovalRulesManager
+
+logger = logging.getLogger(__name__)
 
 
 class ChatPlatformToolAgent:
@@ -39,6 +43,8 @@ class ChatPlatformToolAgent:
         self.approval_tracker = approval_tracker
         self.agent = agent_instance
         self._current_thread_id: Optional[str] = None
+        # Session manager for thread-aware conversation history
+        self._session_manager = SessionManager()
 
     def set_thread_id(self, thread_id: str) -> None:
         """
@@ -140,15 +146,68 @@ class ChatPlatformToolAgent:
 
     async def send(self, message: str) -> str:
         """
-        Send a message to the agent and get response.
+        Send a message to the agent and get response with thread-aware history.
+
+        This method maintains separate conversation history per thread_id,
+        ensuring that each thread has isolated conversation context.
 
         Args:
             message: User message to send
 
         Returns:
             Agent response text
+
+        Raises:
+            ValueError: If thread_id is not set before sending
         """
-        # Use fast-agent's send() method (explicit API)
-        response = await self.agent.send(message)
-        return response if isinstance(response, str) else str(response)
+        if not self._current_thread_id:
+            raise ValueError("Thread ID must be set before sending messages. Call set_thread_id() first.")
+        
+        try:
+            # Import from fast_agent (fast-agent-mcp package installs as fast_agent in newer versions)
+            from fast_agent import Prompt
+            
+            # Get conversation history for this thread
+            history = self._session_manager.get_messages(self._current_thread_id)
+            
+            # Convert current message to fast-agent format
+            user_message = Prompt.user(message)
+            
+            # Add user message to history
+            history.append(user_message)
+            
+            # Generate response with full conversation history
+            # This ensures each thread maintains its own isolated context
+            # Fast-agent handles tool execution internally and returns the final response
+            # Access the specific agent by name (butabot_agent) from the AgentApp
+            # The agent instance from fast.run() is an AgentApp that requires accessing agents by name
+            response = await self.agent.butabot_agent.generate(history)
+            
+            # Extract text response for return value
+            response_text = response.last_text()
+            
+            # Store the full PromptMessageExtended response in history
+            # This preserves tool calls and results for proper context in future messages
+            # The response object is already a PromptMessageExtended, so we can add it directly
+            history.append(response)
+            
+            # Store updated history for this thread
+            self._session_manager.store_messages(self._current_thread_id, history)
+            
+            logger.debug(
+                f"Processed message for thread {self._current_thread_id}. "
+                f"History now contains {len(history)} messages."
+            )
+            
+            return response_text
+            
+        except ImportError as e:
+            logger.error(f"fast-agent not properly installed: {e}")
+            raise ValueError("fast-agent is required but not properly installed") from e
+        except Exception as e:
+            logger.error(
+                f"Error processing message for thread {self._current_thread_id}: {e}",
+                exc_info=True
+            )
+            raise
 

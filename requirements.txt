@@ -1,6 +1,7 @@
 anthropic>=0.44.0
 fastmcp
-fast-agent-mcp>=0.2.5
+fast-agent-mcp>=0.2.36
+deprecated>=1.2.18
 slack-bolt>=1.18.0
 slack-sdk>=3.38.0
 nextcord>=2.4.0

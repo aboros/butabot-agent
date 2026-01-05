@@ -1,6 +1,7 @@
 """Slack connector implementing PlatformInterface."""
 
 import json
+import logging
 import os
 from typing import Any, Dict, Optional
 
@@ -44,6 +45,12 @@ class SlackConnector(PlatformInterface):
         
         # Track channel_id per thread_id for message routing
         self._thread_channels: Dict[str, str] = {}
+        
+        # Cache bot user ID to avoid repeated API calls
+        self._bot_user_id: Optional[str] = None
+        
+        # Register handlers during initialization
+        self._register_handlers()
 
     def set_message_handler(self, message_handler: Any) -> None:
         """Set the message handler instance for processing messages."""
@@ -52,6 +59,13 @@ class SlackConnector(PlatformInterface):
     def set_agent(self, agent: Any) -> None:
         """Set the agent instance for processing messages (deprecated - use set_message_handler)."""
         self._agent = agent
+
+    async def _get_bot_user_id(self) -> str:
+        """Get bot user ID, caching the result."""
+        if not self._bot_user_id:
+            auth_response = await self.client.auth_test()
+            self._bot_user_id = auth_response.get("user_id", "")
+        return self._bot_user_id
 
     def _normalize_slack_message(self, event: Dict[str, Any]) -> PlatformMessage:
         """
@@ -72,6 +86,13 @@ class SlackConnector(PlatformInterface):
         # Check if this is a mention (has bot mention in text)
         text = event.get("text", "")
         is_mention = "<@" in text  # Simple check - can be refined
+        
+        # Remove bot mention from content if present and bot_user_id is cached
+        # Note: Full removal with actual bot_user_id happens in the handler where we have async access
+        if is_mention and self._bot_user_id:
+            mention_pattern = f"<@{self._bot_user_id}>"
+            if mention_pattern in content:
+                content = content.replace(mention_pattern, "").strip()
 
         return PlatformMessage(
             thread_id=thread_id,
@@ -174,15 +195,41 @@ class SlackConnector(PlatformInterface):
 
     def _register_handlers(self) -> None:
         """Register Slack event and action handlers."""
+        import logging
+        
         from bot.factoids import FactoidManager
         
         factoid_manager = FactoidManager()
+        logger = logging.getLogger(__name__)
+        
+        # Middleware to log all events as info
+        @self.app.middleware
+        async def log_all_events(body: Dict[str, Any], next):
+            """Middleware to log all Slack events as info."""
+            event = body.get("event", {})
+            event_type = event.get("type", body.get("type", "unknown"))
+            
+            # Log the event before processing
+            logger.info(f"Received Slack event: {event_type}", extra={"event": event})
+            
+            # Continue processing
+            return await next()
         
         @self.app.event("app_mention")
         async def handle_app_mention(event: Dict[str, Any], say, client):
             """Handle app mention events."""
+            # Initialize bot_user_id if not cached
+            if not self._bot_user_id:
+                await self._get_bot_user_id()
+            
             # Normalize message
             platform_message = self._normalize_slack_message(event)
+            
+            # Remove bot mention from content (do it here where we have async access)
+            if platform_message.is_mention and self._bot_user_id:
+                mention_pattern = f"<@{self._bot_user_id}>"
+                if mention_pattern in platform_message.content:
+                    platform_message.content = platform_message.content.replace(mention_pattern, "").strip()
             
             # Track channel_id for this thread
             self._thread_channels[platform_message.thread_id] = platform_message.channel_id
@@ -202,12 +249,40 @@ class SlackConnector(PlatformInterface):
                     await self._message_handler.handle_message(platform_message)
                 except Exception as e:
                     # Log error and send user-friendly message
-                    import logging
-                    logging.error(f"Error processing message: {e}", exc_info=True)
+                    logger.error(f"Error processing message: {e}", exc_info=True)
                     await say(
                         text=f"Sorry, I encountered an error processing your message: {str(e)}",
                         thread_ts=platform_message.thread_id
                     )
+        
+        @self.app.event("message")
+        async def handle_message(event: Dict[str, Any], say, client):
+            """Handle regular message events (check for mentions and factoids)."""
+            # Filter out bot messages
+            if "bot_id" in event:
+                return
+            
+            # Skip if this message contains a bot mention
+            # Slack sends both app_mention and message events for mentions.
+            # The app_mention handler will process mentions, so we skip them here to avoid duplicate processing.
+            text = event.get("text", "")
+            if "<@" in text:
+                # This is a mention - let app_mention handle it
+                return
+            
+            # Only process messages with text
+            if not event.get("text"):
+                return
+            
+            # Normalize message
+            platform_message = self._normalize_slack_message(event)
+            
+            # Track channel_id for this thread
+            self._thread_channels[platform_message.thread_id] = platform_message.channel_id
+            
+            # At this point, we know it's not a mention (we filtered those out above)
+            # So we just log it as a non-mention message
+            logger.info(f"Received non-mention message: {event.get('type', 'unknown')} event")
 
     async def start(self) -> None:
         """Start the Slack connector (Socket Mode)."""
