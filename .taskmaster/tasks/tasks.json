@@ -1,0 +1,151 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Create Configuration File Structure and Loading Utilities",
+        "description": "Set up config directory with fastagent.config.yaml, fastagent.secrets.yaml (gitignored), and approval_rules.yaml templates with environment variable substitution support.",
+        "details": "Create config/ directory. Use PyYAML 6.0.2 for parsing. Implement config loader with python-dotenv 1.0.1 for env var substitution (${VAR_NAME}). Add validation with pydantic 2.9.2. Template fastagent.config.yaml with MCP servers list, model='claude-3-5-sonnet-20241022', max_tokens=4096. fastagent.secrets.yaml with ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, DISCORD_TOKEN placeholders. approval_rules.yaml with tool_name: true/false mappings. Add .gitignore for secrets. Pseudo-code: ```python\ndef load_config(path): with open(path) as f: data = yaml.safe_load(f) return substitute_env_vars(data)```",
+        "testStrategy": "Unit tests: verify YAML parsing, env substitution (dotenv), validation passes/fails, defaults applied. Mock env vars, assert loaded dict structure matches schema. Coverage: 90%+.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Implement PlatformInterface Abstract Base Class",
+        "description": "Create connectors/interface.py with PlatformInterface ABC and PlatformMessage dataclass for standardized message handling.",
+        "details": "Use abc module and dataclasses. Define PlatformMessage with thread_id:str, user_id:str, content:str, platform:str, channel_id:str, is_mention:bool. Abstract methods: async receive_message(event), async send_message(thread_id, content, msg_type), async request_approval(thread_id, tool_name, params, timeout), async handle_button_click(payload). Use typing annotations. Pseudo-code: ```python\nclass PlatformInterface(ABC): @abstractmethod async def send_message(self, ...): pass``` Export PlatformMessage, PlatformInterface.",
+        "testStrategy": "Unit tests: verify ABC cannot instantiate, dataclass serialization/deserialization, type checking. Mock subclass implementation tests.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Install and Verify fast-agent-mcp Framework Integration",
+        "description": "Install fast-agent-mcp and create minimal POC agent with MCP server connection and basic tool execution.",
+        "details": "pip install fast-agent-mcp==latest (pin to 0.2.5+ as of 2026), pydantic, anthropic==0.44.0. Create test_agent.py with @fast.agent(model='claude-3-5-sonnet-20241022', mcp_servers=[{'url': 'ws://mcp-server1'}]). Test agent.send('test message'). Verify tool discovery from 5-6 MCP servers. POC: minimal ToolRunnerHook that logs tool calls. Confirm async hook support and exception blocking.",
+        "testStrategy": "Integration tests: agent instantiation, MCP connection (mock servers), tool discovery (assert 90+ tools), basic message processing, hook interception. Verify no tool calls without approval simulation.",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Implement ApprovalRulesManager",
+        "description": "Create approval/rules_manager.py to load and query tool approval rules from approval_rules.yaml.",
+        "details": "Use PyYAML 6.0.2, pydantic for validation. Class ApprovalRulesManager with load_rules(path), requires_approval(tool_name) -> bool (default False). Support tool categories: {'filesystem/*': true}. Cache loaded rules. Pseudo-code: ```python\nclass ApprovalRulesManager: def __init__(self, config_path): self.rules = self._load_yaml(config_path) def requires_approval(self, tool): return self.rules.get(tool, False)```",
+        "testStrategy": "Unit tests: rule loading, exact match, category match (glob 'filesystem/read'), missing tool default False, invalid YAML graceful fallback, cache hit/miss.",
+        "priority": "medium",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Implement ApprovalTracker System",
+        "description": "Create approval/approval_tracker.py for tracking pending approvals with async resolution and timeouts.",
+        "details": "Use asyncio.Future, uuid for approval_id. Dict[approval_id, ToolApprovalRequest]. Methods: create_approval(thread_id, tool_name, params, timeout=300) -> approval_id, resolve_approval(approval_id, approved:bool), get_future(approval_id) -> Future[bool]. Timeout via asyncio.wait_for. Cleanup expired. Dataclass ToolApprovalRequest(approval_id, thread_id, tool_name, tool_input:dict, tool_use_id:str, created_at:datetime, future:Future).",
+        "testStrategy": "Unit tests: create/track/resolve, concurrent approvals (asyncio.gather), timeout deny, cleanup, invalid ID handling. Mock asyncio for deterministic timing.",
+        "priority": "medium",
+        "dependencies": [
+          4
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Create agent/agent_config.py and ChatPlatformToolAgent",
+        "description": "Define fast-agent with MCP config and custom ChatPlatformToolAgent using ToolRunnerHooks for approval integration.",
+        "details": "agent/agent_config.py: def create_agent() -> ToolAgent. Use @fast.agent from config. agent/tool_agent.py: class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable): async def before_tool_call(self, tool_use_id, tool_name, tool_input): if rules.requires(tool_name): approval_id = tracker.create(...); approved = await tracker.get_future(approval_id); if not approved: raise ToolApprovalDenied(). Integrate platform_interface.send_status().",
+        "testStrategy": "Integration tests: agent creation, MCP tool discovery, hook interception (mock platform/rules/tracker), approval block via exception, result reporting.",
+        "priority": "high",
+        "dependencies": [
+          2,
+          3,
+          4,
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Implement SlackConnector",
+        "description": "Create connectors/slack_connector.py implementing PlatformInterface for Slack events, messages, approvals, buttons.",
+        "details": "slack-bolt 1.19.2. Handle app_mention, message, block_actions. Normalize to PlatformMessage (event['ts'] as thread_id). send_message: say() with blocks/embeds. request_approval: post ephemeral with buttons (approve/deny actions). handle_button_click: ack(), update tracker. Integrate factoids.check_message(). Pseudo-code: ```python\nclass SlackConnector(PlatformInterface): async def handle_event(self, body, say): msg = PlatformMessage(...) if factoids.match(msg): await say(factoids.response); return await self.agent.process(msg)```",
+        "testStrategy": "Integration tests: mock Slack app, mention→agent→response, approval buttons→resolve, factoid bypass, thread handling, API errors (429/500). Verify no regressions.",
+        "priority": "high",
+        "dependencies": [
+          2,
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Implement DiscordConnector",
+        "description": "Create connectors/discord_connector.py implementing PlatformInterface for Discord messages, approvals, interactions.",
+        "details": "discord.py 2.4.0 (nextcord fork for stability). on_message, on_interaction. Normalize PlatformMessage (message.id for thread_id if threaded). send_message: embeds. request_approval: send with View (Approve/Deny buttons, custom_id=approval_id). handle interaction: defer(), update tracker. Factoid integration. Pseudo-code: similar to Slack but DiscordClient.",
+        "testStrategy": "Integration tests: mock Discord client, message→agent→embed response, approval View→resolve, mention detection, DM vs channel, API errors.",
+        "priority": "high",
+        "dependencies": [
+          2,
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Update app.py and Integrate Factoids with Multi-Platform Support",
+        "description": "Refactor main app.py to initialize connectors/agent, handle multiple platforms. Update factoids.py for PlatformMessage.",
+        "details": "app.py: async def main(): config = load_config(); slack = SlackConnector(config); discord = DiscordConnector(config); agent = create_agent(); slack.agent = discord.agent = agent; app.start(). Factoids: class FactoidManager with check(msg: PlatformMessage) -> str|None, 30s cooldown (redis or in-memory), random response. Multi-platform event loop.",
+        "testStrategy": "E2E tests: parallel Slack/Discord messages, factoid hit/miss/cooldown, agent processing isolation, multi-thread conversations. Load testing 10 concurrent.",
+        "priority": "medium",
+        "dependencies": [
+          7,
+          8
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Implement Comprehensive Test Suite, Error Handling, and Documentation",
+        "description": "Create tests/unit, tests/integration, tests/e2e with 80%+ coverage. Add error handling and docs.",
+        "details": "pytest 8.3.3, pytest-asyncio 0.24.0, pytest-cov. Mock external APIs (responses, aioresponses 0.7.6). Error handling: try/except in hooks/connectors, user-friendly msgs (no stacktraces), structlog 24.4.0 logging. Docs: README with setup, architecture.md from PRD. Coverage: unit 70%, integration 20%, e2e 10%.",
+        "testStrategy": "Run pytest --cov=bot --cov-report=html. Verify 80% line/75% branch coverage. Test error scenarios (API fail, timeout, invalid input), recovery continues operation.",
+        "priority": "medium",
+        "dependencies": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2026-01-05T11:55:51.640Z",
+      "updated": "2026-01-05T11:55:51.640Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
