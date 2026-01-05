@@ -51,6 +51,8 @@ SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
 DISCORD_TOKEN: "${DISCORD_TOKEN}"
 ```
 
+**Important:** Fast-agent automatically loads `fastagent.config.yaml` and `fastagent.secrets.yaml` from the project root (not from the `config/` directory). These files are automatically copied to the root during Docker build, or mounted there in docker-compose for development.
+
 ### Step 2: Configuration Files Setup
 
 1. **Configure MCP servers** (optional, for tool testing):
@@ -120,14 +122,21 @@ Use this checklist to systematically test all major functionality:
 ### Configuration System
 
 - [ ] **Configuration Loading**
-  - [ ] Verify `config/fastagent.config.yaml` loads without errors
-  - [ ] Verify `config/fastagent.secrets.yaml` loads (check logs for no errors)
-  - [ ] Verify environment variable substitution works (check logs)
-  - [ ] Verify `config/approval_rules.yaml` loads correctly
+  - [ ] Verify `fastagent.config.yaml` exists in project root (copied from `config/` during Docker build)
+  - [ ] Verify `fastagent.secrets.yaml` exists in project root (copied from `config/` during Docker build)
+  - [ ] Verify fast-agent loads config automatically when agent is instantiated (check logs for no errors)
+  - [ ] Verify `config/approval_rules.yaml` loads correctly (custom config for approval system)
 
-  **Test Command:**
+  **Test Commands:**
   ```bash
-  docker compose exec bot python -c "from config.loader import load_config, load_secrets, load_approval_rules; print('Config:', load_config()); print('Secrets loaded:', bool(load_secrets())); print('Rules:', load_approval_rules())"
+  # Verify approval rules load (custom config)
+  docker compose exec bot python -c "from config.loader import load_approval_rules; print('Rules:', load_approval_rules())"
+  
+  # Verify fast-agent config files exist in root
+  docker compose exec bot ls -la /app/fastagent.config.yaml /app/fastagent.secrets.yaml
+  
+  # Verify fast-agent can load config (will happen when agent is created)
+  docker compose exec bot python -c "from pathlib import Path; import yaml; print('Config file exists:', Path('/app/fastagent.config.yaml').exists())"
   ```
 
 ### Platform Connectors
@@ -226,17 +235,24 @@ Use this checklist to systematically test all major functionality:
 ### Agent Integration
 
 - [ ] **Agent Configuration**
-  - [ ] Agent config loads from `config/fastagent.config.yaml`
-  - [ ] MCP servers are configured correctly
-  - [ ] Model configuration is correct
+  - [ ] Fast-agent automatically loads config from `fastagent.config.yaml` in project root
+  - [ ] Fast-agent automatically loads secrets from `fastagent.secrets.yaml` in project root
+  - [ ] MCP servers are configured correctly in config file
+  - [ ] Model configuration is correct in config file
+  - [ ] Config files are copied to root during Docker build (or mounted in docker-compose)
 
-  **Test Command:**
+  **Test Commands:**
   ```bash
-  docker compose exec bot python -c "from agent.agent_config import create_agent_config; print(create_agent_config())"
+  # Verify config files exist in project root (where fast-agent expects them)
+  docker compose exec bot ls -la /app/fastagent.config.yaml /app/fastagent.secrets.yaml
+  
+  # Verify config file structure is valid
+  docker compose exec bot python -c "import yaml; print('Config valid:', yaml.safe_load(open('/app/fastagent.config.yaml')))"
   ```
 
 - [ ] **Fast-Agent Instance Creation**
   - [ ] `create_agent_from_config()` creates agent instance
+  - [ ] Fast-agent automatically loads config when `fast.run()` is called
   - [ ] Agent context manager works correctly
   - [ ] Agent can be used to process messages
   - [ ] MCP servers connect (if configured)
@@ -246,10 +262,10 @@ Use this checklist to systematically test all major functionality:
   ```bash
   docker compose exec bot python -c "
   import asyncio
-  from agent.agent_config import create_agent_config, create_agent_from_config
+  from agent.agent_config import create_agent_from_config
   async def test():
-      config = create_agent_config()
-      async with await create_agent_from_config(config) as agent:
+      # Fast-agent automatically loads config from fastagent.config.yaml in project root
+      async with await create_agent_from_config() as agent:
           response = await agent('Hello!')
           print('Agent response:', response)
   asyncio.run(test())
@@ -440,9 +456,11 @@ docker compose down -v
    - Check firewall/network settings
 
 3. **Configuration errors**
-   - Validate YAML syntax: `python -c "import yaml; yaml.safe_load(open('config/fastagent.config.yaml'))"`
+   - Validate YAML syntax: `python -c "import yaml; yaml.safe_load(open('/app/fastagent.config.yaml'))"`
+   - Verify config files exist in project root (fast-agent expects them there)
    - Verify environment variables are set
    - Check file permissions
+   - Note: Fast-agent automatically loads config from project root, not from `config/` directory
 
 4. **Import errors**
    - Verify all dependencies are installed: `docker compose exec bot pip list`
@@ -478,12 +496,16 @@ The bot now uses a centralized MessageHandler architecture:
 ### Agent Creation
 
 The agent is now created via `create_agent_from_config()`:
-- Loads config from `fastagent.config.yaml`
+- Fast-agent automatically loads config from `fastagent.config.yaml` in project root when `fast.run()` is called
+- Fast-agent automatically loads secrets from `fastagent.secrets.yaml` in project root
 - Creates fast-agent instance with `@fast.agent` decorator
 - Returns async context manager for lifecycle management
 - Wrapped in `ChatPlatformToolAgent` for approval hooks
 
+**Note:** Config files are copied from `config/` directory to project root during Docker build (see `docker/Dockerfile`), or mounted in docker-compose for development.
+
 **Testing Agent Creation:**
+- Verify config files exist in project root (`/app/fastagent.config.yaml` and `/app/fastagent.secrets.yaml`)
 - Verify agent context manager enters/exits correctly
 - Verify agent instance is usable for message processing
 - Verify MCP servers connect (if configured)

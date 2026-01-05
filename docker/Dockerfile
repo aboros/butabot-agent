@@ -58,7 +58,16 @@ COPY test_agent.py .
 # Note: factoids.json is optional - FactoidManager handles missing files gracefully
 # If factoids.json doesn't exist, create it from factoids.json.example or the app will start without factoids
 COPY factoids.json* ./
-# Note: MCP configuration is now in config/fastagent.config.yaml (already copied above)
+
+# Copy fast-agent config files to root where fast-agent expects them
+# Fast-agent automatically loads fastagent.config.yaml and fastagent.secrets.yaml from the project root
+# We keep them in config/ for organization, but copy to root for fast-agent's built-in loading
+RUN if [ -f ./config/fastagent.config.yaml ]; then \
+        cp ./config/fastagent.config.yaml ./fastagent.config.yaml; \
+    fi && \
+    if [ -f ./config/fastagent.secrets.yaml ]; then \
+        cp ./config/fastagent.secrets.yaml ./fastagent.secrets.yaml; \
+    fi
 
 # Create data directory for agent workspace
 RUN mkdir -p /app/data

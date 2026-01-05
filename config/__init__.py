@@ -1,6 +1,6 @@
-"""Configuration loading utilities for fast-agent-mcp."""
+"""Configuration loader module for custom configuration files."""
 
-from .loader import load_config, load_secrets, load_approval_rules, ConfigError
+from .loader import load_approval_rules, ConfigError
 
-__all__ = ["load_config", "load_secrets", "load_approval_rules", "ConfigError"]
+__all__ = ["load_approval_rules", "ConfigError"]
 

@@ -4,10 +4,9 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 
-from config.loader import load_config, load_secrets
 from connectors.discord_connector import DiscordConnector
 from connectors.slack_connector import SlackConnector
-from agent.agent_config import create_agent_config, create_agent_from_config
+from agent.agent_config import create_agent_from_config
 from agent.tool_agent import ChatPlatformToolAgent
 from approval.approval_tracker import ApprovalTracker
 from approval.rules_manager import ApprovalRulesManager
@@ -17,10 +16,11 @@ from core.message_handler import MessageHandler
 
 async def main():
     """Main entry point for multi-platform bot."""
-    # Load configuration
+    # Configuration directory
     config_dir = Path("config")
-    config = load_config(config_dir)
-    secrets = load_secrets(config_dir)
+    
+    # Note: Fast-agent automatically loads fastagent.config.yaml and fastagent.secrets.yaml
+    # from the project root (copied there during Docker build or mounted in docker-compose)
 
     # Initialize approval system
     rules_manager = ApprovalRulesManager(config_dir)
@@ -34,11 +34,11 @@ async def main():
     # For testing, only start Slack connector
     # discord_connector = DiscordConnector()
 
-    # Create agent configuration and instance
+    # Create agent instance
+    # Fast-agent automatically loads configuration from fastagent.config.yaml in project root
     agent_context = None
     try:
-        agent_config = create_agent_config(config_dir)
-        agent_context = await create_agent_from_config(agent_config, config_dir)
+        agent_context = await create_agent_from_config(config_dir=config_dir)
         
         # Use async context manager to keep agent alive
         async with agent_context as agent_instance:
