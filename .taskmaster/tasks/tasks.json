@@ -60,7 +60,39 @@
           4
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Dataclass and Storage Structure",
+            "description": "Define ToolApprovalRequest dataclass and initialize storage dict mapping approval_id to ToolApprovalRequest instances using asyncio.Future.",
+            "dependencies": [],
+            "details": "Create @dataclass ToolApprovalRequest with fields: approval_id:UUID, thread_id:str, tool_name:str, tool_input:dict, tool_use_id:str, created_at:datetime, future:asyncio.Future[bool]. Implement self._approvals: Dict[UUID, ToolApprovalRequest] in ApprovalTracker class with proper type hints and imports (uuid, asyncio, datetime).",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 2,
+            "title": "Implement Core Methods with Timeout Handling",
+            "description": "Add create_approval, resolve_approval, get_future methods with timeout support via asyncio.wait_for.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement create_approval(thread_id, tool_name, params, timeout=300) -> UUID: generate UUID, create Future, store ToolApprovalRequest, return id. resolve_approval(approval_id, approved:bool): set future.result(approved). get_future(approval_id) -> Future[bool]: retrieve or raise KeyError. Ensure thread-safe access.",
+            "status": "pending",
+            "testStrategy": "Unit tests for create/track/resolve, concurrent approvals with asyncio.gather, timeout deny using asyncio.wait_for"
+          },
+          {
+            "id": 3,
+            "title": "Implement Cleanup Mechanism and Unit Tests",
+            "description": "Add expired approval cleanup and comprehensive unit tests for concurrent access and edge cases.",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement periodic cleanup task removing expired approvals (created_at + timeout). Use asyncio.Lock for concurrent access protection. Write tests: concurrent approvals (asyncio.gather), timeout deny, cleanup, invalid ID handling, race condition prevention. Mock asyncio for deterministic timing.",
+            "status": "pending",
+            "testStrategy": "Unit tests: concurrent approvals (asyncio.gather), timeout deny via asyncio.wait_for, cleanup expired, invalid ID handling, mock asyncio for deterministic timing"
+          }
+        ]
       },
       {
         "id": 6,
@@ -76,7 +108,50 @@
           5
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement agent_config.py factory function",
+            "description": "Create agent/agent_config.py with def create_agent() -> ToolAgent using @fast.agent decorator and MCP configuration from loaded config.",
+            "dependencies": [],
+            "details": "Use fast-agent framework with @fast.agent decorator. Load MCP config from config/fastagent.config.yaml including model='claude-3-5-sonnet-20241022', max_tokens=4096, and MCP servers list. Return configured ToolAgent instance.",
+            "status": "pending",
+            "testStrategy": "Unit test: verify agent creation succeeds, MCP config loaded correctly, agent type is ToolAgent."
+          },
+          {
+            "id": 2,
+            "title": "Define ChatPlatformToolAgent base class",
+            "description": "Create agent/tool_agent.py with class ChatPlatformToolAgent(ToolAgent, ToolRunnerHookCapable) integrating platform_interface for status updates.",
+            "dependencies": [
+              1
+            ],
+            "details": "Inherit from ToolAgent and ToolRunnerHookCapable. Initialize platform_interface in __init__. Add async methods for status messaging via platform_interface.send_status(). Ensure hook compatibility.",
+            "status": "pending",
+            "testStrategy": "Unit test: instantiation, inheritance verification, platform_interface integration mock."
+          },
+          {
+            "id": 3,
+            "title": "Implement before_tool_call approval workflow",
+            "description": "Add async def before_tool_call(self, tool_use_id, tool_name, tool_input) with rules check, tracker approval, and exception on denial.",
+            "dependencies": [
+              2
+            ],
+            "details": "Check if rules.requires(tool_name), create approval_id = tracker.create(...), await approved = tracker.get_future(approval_id), raise ToolApprovalDenied() if not approved. Call platform_interface.send_status() for updates.",
+            "status": "pending",
+            "testStrategy": "Integration test: mock rules/tracker/platform, verify hook interception, approval flow (approve/deny), exception raised on denial."
+          },
+          {
+            "id": 4,
+            "title": "Add Custom ToolApprovalDenied exception and tests",
+            "description": "Define custom ToolApprovalDenied exception class and integrate status messaging. Update tests for full agent workflow.",
+            "dependencies": [
+              3
+            ],
+            "details": "class ToolApprovalDenied(Exception): pass. Ensure exception carries tool_name and reason. Add platform_interface.send_status('approval_denied') in workflow. Include in agent test suite.",
+            "status": "pending",
+            "testStrategy": "Unit test exception raising/handling, integration test full workflow block via exception, coverage for deny path."
+          }
+        ]
       },
       {
         "id": 7,
@@ -90,7 +165,64 @@
           6
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Slack app setup with slack-bolt",
+            "description": "Initialize SlackConnector class inheriting PlatformInterface, install slack-bolt 1.19.2, configure App with bot/app tokens, enable SocketModeHandler for event listening.",
+            "dependencies": [],
+            "details": "Create connectors/slack_connector.py with AsyncApp(token=SLACK_BOT_TOKEN), SocketModeHandler setup. Load env vars securely. Verify app starts without errors using basic logger[1][2].",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 2,
+            "title": "Implement event handlers for app_mention and block_actions",
+            "description": "Add @app.event('app_mention') and @app.action for block_actions handling incoming Slack events with ack(), say(), and logger integration.",
+            "dependencies": [
+              1
+            ],
+            "details": "In handle_event: parse body, ack actions immediately, handle app_mention by normalizing message and routing to agent.process or factoids[1][2]. Use async say() for responses.",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 3,
+            "title": "PlatformMessage normalization logic",
+            "description": "Create normalization function to convert Slack event dict to PlatformMessage instance, mapping event['ts'] to thread_id, user, text, channel details.",
+            "dependencies": [
+              1
+            ],
+            "details": "Def normalize_slack_message(event): return PlatformMessage(thread_id=event['ts'], content=event['text'], user_id=event['user'], channel=event['channel']). Handle subtypes[1].",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 4,
+            "title": "Approval button workflows implementation",
+            "description": "Implement request_approval with ephemeral postephemeral containing approve/deny buttons, handle_button_click with ack() and tracker resolution.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Use blocks with actions: action_id='approve', 'deny'. In callback: ack(), resolve_approval(approval_id, approved=True/False) via ApprovalTracker. Integrate uuid for IDs[1].",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 5,
+            "title": "Integration tests with mocked Slack API",
+            "description": "Write pytest integration tests mocking Slack app, covering mention→agent→response, approval→resolve, factoids bypass, thread handling, API errors (429/500).",
+            "dependencies": [
+              2,
+              3,
+              4
+            ],
+            "details": "Use pytest-asyncio, unittest.mock for App/SocketModeHandler. Assert say() calls, tracker updates, no regressions. Test rate limits with side_effects[1][2].",
+            "status": "pending",
+            "testStrategy": "Run pytest with coverage >90%, verify mocks match real flows"
+          }
+        ]
       },
       {
         "id": 8,
@@ -104,7 +236,64 @@
           6
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Set up DiscordClient with nextcord",
+            "description": "Implement DiscordClient class inheriting from PlatformInterface using nextcord 2.4.0, configure intents for messages and interactions, load bot token from environment.",
+            "dependencies": [],
+            "details": "Use nextcord.Client or commands.Bot with intents.message_content=True and intents.guilds=True. Implement __init__ with bot setup, run method. Handle on_ready event. Reference nextcord quickstart patterns.",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 2,
+            "title": "Implement on_message and on_interaction event handlers",
+            "description": "Create async event handlers for on_message and on_interaction events, normalize incoming Discord messages to PlatformMessage, integrate factoids.check_message(), defer interactions.",
+            "dependencies": [
+              1
+            ],
+            "details": "In on_message: extract message.id as thread_id if threaded, detect mentions/DMs vs channels. In on_interaction: handle View button clicks, defer() then process approval_id. Similar to SlackConnector pattern.",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 3,
+            "title": "Develop PlatformMessage normalization with thread handling",
+            "description": "Create normalization logic converting Discord Message/Interaction to PlatformMessage, handle thread_id using message.id for threaded messages, support DM/channel logic and mention detection.",
+            "dependencies": [
+              1
+            ],
+            "details": "PlatformMessage fields: thread_id=message.id if message.thread else channel.id, user_id=author.id, content=message.content. Distinguish DM (type==DMChannel) vs guild channels.",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 4,
+            "title": "Build ApprovalView components for request_approval",
+            "description": "Implement Discord View class with Approve/Deny buttons using custom_id=approval_id, integrate with ApprovalTracker for send_message with embeds and handle interaction updates.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "request_approval: create View(ApprovalView(approval_id)), send embed with tool details. View.callback: defer(), resolve via tracker.resolve_approval(approved). Timeout handling via tracker.",
+            "status": "pending",
+            "testStrategy": null
+          },
+          {
+            "id": 5,
+            "title": "Create mocked integration tests for DiscordConnector",
+            "description": "Write integration tests mocking Discord client, verify message→agent→embed response flow, approval View→resolve, mention detection, DM vs channel, factoid integration, API error handling.",
+            "dependencies": [
+              2,
+              3,
+              4
+            ],
+            "details": "Use pytest-asyncio and unittest.mock. Mock nextcord.Message, Interaction, Client. Test flows: factoid bypass, approval timeout deny, thread handling, 429/500 error resilience. No regressions.",
+            "status": "pending",
+            "testStrategy": "Run pytest with coverage >90%, verify async flows with asyncio.gather, mock tracker futures."
+          }
+        ]
       },
       {
         "id": 9,
@@ -118,7 +307,40 @@
           8
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Refactor app.py for Multi-Platform Initialization",
+            "description": "Update app.py to load config, initialize SlackConnector and DiscordConnector, create shared agent, assign agent to connectors, and start multi-platform event loop.",
+            "dependencies": [],
+            "details": "Implement async def main(): with config=load_config(), slack=SlackConnector(config), discord=DiscordConnector(config), agent=create_agent(), shared assignment slack.agent = discord.agent = agent, and app.start() for event loop coordination. Ensure async compatibility across platforms.",
+            "status": "pending",
+            "testStrategy": "Unit tests for connector init, agent sharing, config loading; integration test for startup without errors."
+          },
+          {
+            "id": 2,
+            "title": "Implement FactoidManager with Cooldown Logic",
+            "description": "Create FactoidManager class in factoids.py that processes PlatformMessage, checks 30s cooldown using in-memory or Redis, and returns random factoid response or None.",
+            "dependencies": [
+              1
+            ],
+            "details": "Define class FactoidManager with async def check(self, msg: PlatformMessage) -> str|None. Use dict/timestamp for in-memory cooldown or Redis for persistence. Select random response from predefined factoids on cooldown miss. Thread-safe for multi-platform.",
+            "status": "pending",
+            "testStrategy": "Unit tests: cooldown hit/miss, random selection, multi-thread access; mock PlatformMessage and Redis."
+          },
+          {
+            "id": 3,
+            "title": "Add E2E Tests for Multi-Platform and Factoids",
+            "description": "Develop end-to-end tests verifying parallel Slack/Discord message processing, factoid triggers/cooldowns, shared agent isolation, and concurrent conversations.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Use pytest-asyncio for E2E: simulate parallel messages on both platforms, assert factoid responses with cooldown, verify agent processes independently, test 10 concurrent loads. Mock connectors and agent for isolation.",
+            "status": "pending",
+            "testStrategy": "E2E test suite: parallel platform messages, factoid hit/miss/cooldown scenarios, agent isolation, load testing with 10 concurrent sessions."
+          }
+        ]
       },
       {
         "id": 10,
@@ -139,7 +361,79 @@
           9
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Unit Test Structure Setup",
+            "description": "Create tests/unit directory with pytest-asyncio fixtures and test files for core modules like approval_tracker, rules_manager, hooks.",
+            "dependencies": [],
+            "details": "Use pytest 8.3.3, pytest-asyncio 0.24.0. Create conftest.py with async fixtures (mock asyncio, dataclass instances). Target 70% unit coverage for Tasks 4,5. Structure: tests/unit/test_approval/, test_rules/, test_hooks/.",
+            "status": "pending",
+            "testStrategy": "Run pytest tests/unit/ --cov=approval --cov=rules --cov-report=term-missing. Verify 70%+ coverage, no failures."
+          },
+          {
+            "id": 2,
+            "title": "Integration Test Mocking Strategy",
+            "description": "Implement tests/integration with mocking for SlackConnector (Task7), DiscordConnector (Task8) using responses, aioresponses 0.7.6.",
+            "dependencies": [
+              1
+            ],
+            "details": "Mock external APIs (Slack/Discord endpoints, MCP servers). Test connector.handle_event → agent → response flows, factoid integration, API errors (429/500). Use pytest.mark.asyncio for async tests.",
+            "status": "pending",
+            "testStrategy": "pytest tests/integration/ -v. Verify mock calls match expected (say/postMessage), no real API calls, approval resolution."
+          },
+          {
+            "id": 3,
+            "title": "E2E Test Scenarios Implementation",
+            "description": "Create tests/e2e simulating full workflows: message → agent → tool approval → resolution across Slack/Discord.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Use pytest, mock MCP servers minimally. Scenarios: factoid bypass, approval request→button→resolve, timeout deny, multi-thread. Target 10% coverage but critical paths. Run against live connectors if safe.",
+            "status": "pending",
+            "testStrategy": "pytest tests/e2e/ --cov=bot --cov-report=html. Verify end-to-end flows succeed, coverage on main paths, error recovery."
+          },
+          {
+            "id": 4,
+            "title": "Error Handling and Logging Implementation",
+            "description": "Add try/except blocks in hooks/connectors with user-friendly messages, integrate structlog 24.4.0, suppress stacktraces.",
+            "dependencies": [
+              1
+            ],
+            "details": "Wrap async/sync critical paths (API calls, tool execution, approval timeouts). Log structured errors: level='error', event='api_failure'. User messages: 'Service temporarily unavailable, retrying...'. Test error scenarios continue operation.",
+            "status": "pending",
+            "testStrategy": "Unit/integration tests for error paths: assert log emitted, no stacktrace to user, operation continues (e.g., approval timeout → deny)."
+          },
+          {
+            "id": 5,
+            "title": "Coverage Reporting and Verification",
+            "description": "Configure pytest-cov for combined unit/integration/e2e coverage reports, enforce 80%+ line/75%+ branch thresholds.",
+            "dependencies": [
+              1,
+              2,
+              3
+            ],
+            "details": "pyproject.toml or pytest.ini: [tool:pytest] addopts = --cov=bot --cov-report=html --cov-fail-under=80. Separate reports: unit 70%, integration 20%, e2e 10%. Generate coverage html for review.",
+            "status": "pending",
+            "testStrategy": "Run full suite: pytest --cov=bot --cov-report=html --cov-fail-under=80. Verify thresholds met, review html report for gaps in connectors/approval flows."
+          },
+          {
+            "id": 6,
+            "title": "Documentation Generation and Update",
+            "description": "Update README.md with setup/install, testing instructions; create architecture.md from PRD covering connectors, approval flow.",
+            "dependencies": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "details": "README sections: Quickstart, Testing (pytest commands, coverage), Development. architecture.md: diagrams (mermaid) for agent→hook→connector→approval. Include tool rules config example. Use PRD as source.",
+            "status": "pending",
+            "testStrategy": null
+          }
+        ]
       }
     ],
     "metadata": {
