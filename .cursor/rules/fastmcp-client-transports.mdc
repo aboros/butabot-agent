@@ -1,7 +1,6 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
-
 # Client Transports
 
 > Configure how FastMCP Clients connect to and communicate with servers.

@@ -1,7 +1,6 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
-
 # The FastMCP Client
 
 > Programmatic client for interacting with MCP servers through a well-typed, Pythonic interface.

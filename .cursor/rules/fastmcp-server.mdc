@@ -1,7 +1,6 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
-
 # The FastMCP Server
 
 > The core FastMCP server class for building MCP applications with tools, resources, and prompts.

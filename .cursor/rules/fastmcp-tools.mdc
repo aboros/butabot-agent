@@ -1,7 +1,6 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
-
 # Tool Operations
 
 > Discover and execute server-side tools with the FastMCP client.

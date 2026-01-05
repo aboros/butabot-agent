@@ -1,7 +1,6 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
-
 # Butabot Agent Development Rules
 
 > Best practices and architectural patterns for the Butabot Slack bot using Anthropic Messages API and FastMCP.
