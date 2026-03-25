@@ -28,10 +28,13 @@ async def main() -> None:
     if platform == "slack":
         from .connectors.slack_connector import SlackConnector
         connector = SlackConnector()
+    elif platform == "discord":
+        from .connectors.discord_connector import DiscordConnector
+        connector = DiscordConnector()
     else:
         raise ValueError(
             f"Unknown platform: {platform!r}. "
-            "Set the PLATFORM environment variable to a supported value (e.g. 'slack')."
+            "Set the PLATFORM environment variable to a supported value ('slack' or 'discord')."
         )
 
     session_manager = SessionManager()
