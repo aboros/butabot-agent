@@ -84,28 +84,41 @@ DISCORD_TOKEN=your-discord-bot-token
 cp .mcp.json.example .mcp.json
 ```
 
-Edit `.mcp.json` to add MCP servers. Use `${VAR_NAME}` placeholders for any secrets — never hardcode them here, as the agent can read this file.
+The file must exist and contain at least `{"mcpServers": {}}`. The default `.mcp.json` ships as an empty config so the bot starts with no extra tools.
+
+Edit `.mcp.json` to add MCP servers. **Do not put secrets in this file** — add them to `.env` instead. MCP server processes automatically inherit the container environment, so any variable in `.env` is available to them without extra configuration.
 
 ```json
 {
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"],
-      "env": {}
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"]
     },
     "brave-search": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-      "env": {
-        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
-      }
+      "args": ["-y", "@brave/brave-search-mcp-server"]
     }
   }
 }
 ```
 
-Add the corresponding values to `.env` so Docker Compose makes them available in the container.
+Add `BRAVE_API_KEY=...` to `.env` and it will be picked up automatically.
+
+For Docker-based MCP servers, pass env vars through with `-e VAR_NAME` (no value — Docker inherits from the parent process):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
+    }
+  }
+}
+```
+
+See `.mcp.json.example` for a full set of pre-configured servers.
 
 ### 4. Platform-specific App Setup
 
@@ -305,11 +318,17 @@ Each directory has its own `docker-compose.yml` and `.env`. They do not share st
 - **Slack**: ensure Interactivity is enabled in your Slack app settings
 - **Discord**: buttons expire after 15 minutes (Discord platform limit); the bot enforces a 5-minute timeout before that
 
+### `MCP config is not a valid JSON` on startup
+
+The Claude CLI expands `${VAR_NAME}` tokens in `.mcp.json` before parsing it. If any env var value contains a JSON-special character (quote, backslash, newline), the resulting file is invalid JSON and the agent fails to start.
+
+**Fix**: remove `env` blocks from `.mcp.json` entirely. MCP server processes inherit the container environment — secrets in `.env` are available automatically without being listed in `.mcp.json`. See the MCP configuration section above.
+
 ### MCP servers not loading
 
-1. Check `.mcp.json` is valid JSON
-2. Verify all `${VAR_NAME}` placeholders are set in `.env`
-3. Test manually: `npx -y @modelcontextprotocol/server-filesystem /tmp`
+1. Check `.mcp.json` is valid JSON (`python3 -m json.tool .mcp.json`)
+2. Confirm the file exists and contains at least `{"mcpServers": {}}`
+3. Test a server manually: `npx -y @modelcontextprotocol/server-filesystem /tmp`
 
 ### Session context lost
 

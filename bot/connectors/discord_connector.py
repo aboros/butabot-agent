@@ -1,7 +1,6 @@
 """Discord connector implementing PlatformConnector."""
 
 import json
-import logging
 import os
 import sys
 from typing import Any, Dict, Optional
@@ -12,10 +11,9 @@ from nextcord.ext import commands
 from dotenv import load_dotenv
 
 from .interface import IncomingMessage, PlatformConnector
+from ..logger import log_error, log_info, log_warning
 
 load_dotenv()
-
-logger = logging.getLogger(__name__)
 
 # Discord's hard limit for a single message
 _MAX_MESSAGE_LENGTH = 1990
@@ -108,7 +106,7 @@ class DiscordConnector(PlatformConnector):
             elif channel:
                 await channel.send(content=chunk)
             else:
-                logger.error(f"send_message: no channel for thread {thread_id}")
+                log_error(f"[Discord] send_message: no channel for thread {thread_id}")
                 return
 
     async def request_approval(
@@ -125,8 +123,8 @@ class DiscordConnector(PlatformConnector):
         """
         channel = self._thread_channels.get(thread_id)
         if not channel:
-            logger.error(
-                f"request_approval: no channel for thread {thread_id}, "
+            log_error(
+                f"[Discord] request_approval: no channel for thread {thread_id}, "
                 f"denying tool '{tool_name}'"
             )
             return False
@@ -170,7 +168,7 @@ class DiscordConnector(PlatformConnector):
             updated = msg.content.split("\n")[0]  # keep the header line
             await msg.edit(content=f"{updated}\n\n_{status}_", view=None)
         except Exception as e:
-            logger.error(f"on_tool_result: failed to update approval message: {e}")
+            log_error(f"[Discord] on_tool_result: failed to update approval message: {e}")
 
     async def start(self) -> None:
         """Start the Discord bot."""
@@ -191,7 +189,15 @@ class DiscordConnector(PlatformConnector):
 
         @self.bot.event
         async def on_ready() -> None:
-            logger.info(f"Discord bot ready: {self.bot.user} (id={self.bot.user.id})")
+            log_info(f"[Discord] Bot ready: {self.bot.user} (id={self.bot.user.id})")
+
+        @self.bot.event
+        async def on_connect() -> None:
+            log_info("[Discord] Connected to gateway.")
+
+        @self.bot.event
+        async def on_disconnect() -> None:
+            log_warning("[Discord] Disconnected from gateway.")
 
         @self.bot.event
         async def on_message(message: nextcord.Message) -> None:
@@ -237,11 +243,11 @@ class DiscordConnector(PlatformConnector):
                     )
                     await self._message_handler(incoming)
                 except Exception as e:
-                    logger.error(f"on_message: handler error: {e}", exc_info=True)
+                    log_error(f"[Discord] on_message: handler error: {e}")
                     import traceback
                     traceback.print_exc(file=sys.stderr)
             else:
-                logger.error("on_message: no message handler registered")
+                log_error("[Discord] on_message: no message handler registered")
                 await self.send_message(thread_id, "❌ Bot not properly initialized.")
 
             await self.bot.process_commands(message)
