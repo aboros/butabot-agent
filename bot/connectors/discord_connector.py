@@ -11,6 +11,7 @@ from nextcord.ext import commands
 from dotenv import load_dotenv
 
 from .interface import IncomingMessage, PlatformConnector
+from ..conversation_key import build_discord_conversation_key, thinking_map_key
 from ..logger import log_error, log_info, log_warning
 
 load_dotenv()
@@ -59,10 +60,9 @@ class DiscordConnector(PlatformConnector):
     """
     Discord platform connector.
 
-    Responds to @mentions only.  Thread continuity follows Discord's own
-    thread model: messages inside a Discord thread share the thread's ID as
-    their session key; top-level channel messages each get the originating
-    message's ID so every mention starts a fresh context.
+    Responds to @mentions only. Session keys are built via
+    ``build_discord_conversation_key`` (Discord threads vs DISCORD_TOP_LEVEL_KEY
+    for channel messages).
     """
 
     def __init__(self) -> None:
@@ -74,7 +74,7 @@ class DiscordConnector(PlatformConnector):
 
         # thread_id -> discord Channel / Thread object
         self._thread_channels: Dict[str, Any] = {}
-        # thread_id -> Message object for the "Thinking…" placeholder
+        # thinking_map_key(thread_id, source_message_id) -> Message for "Thinking…"
         self._thinking_messages: Dict[str, nextcord.Message] = {}
         # tool_use_id -> Message object for the approval prompt
         self._approval_messages: Dict[str, nextcord.Message] = {}
@@ -87,7 +87,13 @@ class DiscordConnector(PlatformConnector):
     # PlatformConnector interface
     # ------------------------------------------------------------------
 
-    async def send_message(self, thread_id: str, content: str) -> None:
+    async def send_message(
+        self,
+        thread_id: str,
+        content: str,
+        *,
+        source_message_id: Optional[str] = None,
+    ) -> None:
         """
         Send a response to the user.
 
@@ -95,7 +101,8 @@ class DiscordConnector(PlatformConnector):
         otherwise posts a new message.  Long responses are split into
         multiple messages to stay within Discord's 2 000-character limit.
         """
-        thinking_msg: Optional[nextcord.Message] = self._thinking_messages.pop(thread_id, None)
+        tk = thinking_map_key(thread_id, source_message_id)
+        thinking_msg: Optional[nextcord.Message] = self._thinking_messages.pop(tk, None)
         channel = self._thread_channels.get(thread_id)
 
         chunks = _split_message(content)
@@ -214,13 +221,16 @@ class DiscordConnector(PlatformConnector):
             # Also handle nickname mentions: <@!id>
             content = content.replace(f"<@!{self.bot.user.id}>", "").strip()
 
-            # Thread-ID strategy:
-            #   • Inside a Discord thread  → use the thread's ID (shared context)
-            #   • Top-level channel message → use the message's own ID (fresh context)
-            if isinstance(message.channel, nextcord.Thread):
-                thread_id = str(message.channel.id)
-            else:
-                thread_id = str(message.id)
+            in_thread = isinstance(message.channel, nextcord.Thread)
+            discord_tid = int(message.channel.id) if in_thread else None
+            thread_id = build_discord_conversation_key(
+                channel_id=str(message.channel.id),
+                user_id=str(message.author.id),
+                message_id=message.id,
+                in_thread=in_thread,
+                discord_thread_id=discord_tid,
+            )
+            source_message_id = str(message.id)
 
             self._thread_channels[thread_id] = message.channel
 
@@ -230,7 +240,9 @@ class DiscordConnector(PlatformConnector):
 
             # Post "Thinking…" placeholder before handing off to the agent
             thinking_msg = await message.channel.send("🤔 Thinking...")
-            self._thinking_messages[thread_id] = thinking_msg
+            self._thinking_messages[
+                thinking_map_key(thread_id, source_message_id)
+            ] = thinking_msg
 
             if self._message_handler:
                 try:
@@ -240,6 +252,7 @@ class DiscordConnector(PlatformConnector):
                         user_id=str(message.author.id),
                         content=content,
                         platform="discord",
+                        source_message_id=source_message_id,
                     )
                     await self._message_handler(incoming)
                 except Exception as e:
@@ -248,7 +261,11 @@ class DiscordConnector(PlatformConnector):
                     traceback.print_exc(file=sys.stderr)
             else:
                 log_error("[Discord] on_message: no message handler registered")
-                await self.send_message(thread_id, "❌ Bot not properly initialized.")
+                await self.send_message(
+                    thread_id,
+                    "❌ Bot not properly initialized.",
+                    source_message_id=source_message_id,
+                )
 
             await self.bot.process_commands(message)
 

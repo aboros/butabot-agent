@@ -32,10 +32,23 @@ A multi-platform chat bot powered by Anthropic's Agent SDK. Each deployment inst
 - **`SlackConnector`** — Slack Bolt, Socket Mode, Block Kit approval buttons
 - **`DiscordConnector`** — nextcord, @mention detection, Discord UI buttons
 - **`ClaudeClient`** — Anthropic Agent SDK wrapper; platform-agnostic
-- **`SessionManager`** — maps thread IDs to Agent SDK sessions
+- **`SessionManager`** — maps conversation keys to Agent SDK session IDs (optional JSON persistence)
+- **`ConversationDispatch`** — per-conversation FIFO queue plus a global limit on concurrent agent turns
 - **`ToolApprovalManager`** — Slack-specific approval state machine (used internally by `SlackConnector`)
 
 The `PLATFORM` environment variable selects which connector is loaded at startup. No other code changes are needed to switch platforms.
+
+### Concurrency, conversation keys, and persistence
+
+- **Queues**: Incoming messages are enqueued per stable `thread_id`. Different conversations can be processed in parallel up to `MAX_CONCURRENT_AGENT_TURNS` (default 8). The same `thread_id` is handled strictly in order.
+- **Conversation keys**: Connectors compute `thread_id` from platform events. Discord top-level mentions use `DISCORD_TOP_LEVEL_KEY` (`per_message`, `channel`, or `channel_user`). Slack uses `SLACK_KEY` (`thread_ts`, `channel`, or `channel_user`). See `.env.example`.
+- **Persistence**: Set `SESSIONS_JSON_PATH` or `PERSIST_SESSION_IDS=true` to save `thread_id → session_id` under `/app/data` (or `AGENT_DATA_DIR`) so Agent SDK `resume` works after restart.
+
+Run unit tests from the repo root:
+
+```bash
+PYTHONPATH=. python3 -m unittest discover tests -v
+```
 
 ## Prerequisites
 
