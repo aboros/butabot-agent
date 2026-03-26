@@ -9,7 +9,7 @@ services:
       - .env
     volumes:
       # Agent working directory — mount any folders you want the agent to access
-      - ./data:/app/data:rw
+      - ${AGENT_DATA_DIR}:/app/data:rw
 
       # Examples:
       # - /path/to/project:/app/data/project:rw
