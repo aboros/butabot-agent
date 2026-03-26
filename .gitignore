@@ -13,8 +13,9 @@ ENV/
 .env
 .env.local
 
-# MCP
-.mcp.json
+# MCP — .mcp.json is tracked (contains no secrets; env vars are inherited from the container)
+# Use .mcp.local.json for local overrides (gitignored)
+.mcp.local.json
 
 # IDE
 .vscode/
