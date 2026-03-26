@@ -61,6 +61,8 @@ async def main() -> None:
                 message.thread_id,
                 response,
                 source_message_id=message.source_message_id,
+                replace_thinking_placeholder=False,
+                release_thinking_placeholder=True,
             )
         except Exception as e:
             log_error(f"Error handling message for thread {message.thread_id}: {e}")
@@ -71,6 +73,8 @@ async def main() -> None:
                 message.thread_id,
                 f"❌ *Error:* {e}",
                 source_message_id=message.source_message_id,
+                replace_thinking_placeholder=False,
+                release_thinking_placeholder=True,
             )
 
     dispatch = ConversationDispatch(

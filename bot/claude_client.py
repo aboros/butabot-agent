@@ -150,6 +150,8 @@ class ClaudeClient:
                         await self.connector.send_message(
                             thread_id,
                             f"🔧 Using `{tool_name}`…",
+                            replace_thinking_placeholder=False,
+                            tool_use_id=tool_use_id or None,
                         )
                     except Exception as e:
                         log_error(f"pre_tool_use_hook: error sending tool notice: {e}")
@@ -176,18 +178,12 @@ class ClaudeClient:
                 tool_result = input_data.get("tool_result", {})
                 is_error = input_data.get("is_error", False)
                 try:
-                    if self._tool_approval_enabled:
-                        await self.connector.on_tool_result(
-                            tool_use_id=tool_use_id,
-                            tool_result=tool_result,
-                            is_error=is_error,
-                        )
-                    else:
-                        if is_error:
-                            line = f"❌ `{tool_name}` finished with an error."
-                        else:
-                            line = f"✅ `{tool_name}` finished."
-                        await self.connector.send_message(thread_id, line)
+                    await self.connector.on_tool_result(
+                        tool_use_id=tool_use_id,
+                        tool_result=tool_result,
+                        is_error=is_error,
+                        tool_name=tool_name,
+                    )
                 except Exception as e:
                     log_error(f"post_tool_use_hook: error updating tool result: {e}")
 

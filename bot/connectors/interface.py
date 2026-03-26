@@ -43,15 +43,30 @@ class PlatformConnector(ABC):
         content: str,
         *,
         source_message_id: Optional[str] = None,
+        replace_thinking_placeholder: bool = True,
+        tool_use_id: Optional[str] = None,
+        release_thinking_placeholder: bool = False,
     ) -> None:
         """
         Send a text message back to the user.
 
         Implementations may apply platform-specific formatting (e.g. Slack
-        Block Kit markdown blocks) and should handle the update-in-place
-        pattern (e.g. replacing a "Thinking…" placeholder) internally.
-        source_message_id selects which placeholder to replace when multiple
-        are queued for the same thread_id.
+        Block Kit markdown blocks). source_message_id selects which Thinking
+        placeholder is tied to this send when multiple user messages share a
+        thread_id.
+
+        - replace_thinking_placeholder True (default): replace the Thinking
+          message in-place with this content (legacy).
+        - release_thinking_placeholder True: stop tracking the Thinking message
+          without editing it in the channel, then post this content as new
+          message(s). Use for final replies so "Thinking…" stays visible.
+        - replace_thinking_placeholder False and release_thinking_placeholder
+          False: post a new message and leave Thinking unchanged (e.g. tool
+          status). If tool_use_id is set, remember that message for
+          on_tool_result.
+
+        release_thinking_placeholder takes precedence over replace when both
+        are set.
         """
 
     @abstractmethod
@@ -71,13 +86,19 @@ class PlatformConnector(ABC):
 
     @abstractmethod
     async def on_tool_result(
-        self, tool_use_id: str, tool_result: Any, is_error: bool
+        self,
+        tool_use_id: str,
+        tool_result: Any,
+        is_error: bool,
+        *,
+        tool_name: Optional[str] = None,
     ) -> None:
         """
         Called after a tool finishes executing.
 
-        Implementations use this to update the approval message in-place
-        (e.g. replace "Executing…" with "Results received.").
+        Implementations update the approval prompt in-place when tool approval
+        is enabled, or the ephemeral "Using …" status message when approval is
+        disabled and that message was recorded for tool_use_id.
         """
 
     @abstractmethod

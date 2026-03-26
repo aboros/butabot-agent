@@ -78,6 +78,8 @@ class DiscordConnector(PlatformConnector):
         self._thinking_messages: Dict[str, nextcord.Message] = {}
         # tool_use_id -> Message object for the approval prompt
         self._approval_messages: Dict[str, nextcord.Message] = {}
+        # tool_use_id -> "Using …" status message (when approval is disabled)
+        self._tool_progress_messages: Dict[str, nextcord.Message] = {}
 
         self._message_handler = None
 
@@ -93,16 +95,29 @@ class DiscordConnector(PlatformConnector):
         content: str,
         *,
         source_message_id: Optional[str] = None,
+        replace_thinking_placeholder: bool = True,
+        tool_use_id: Optional[str] = None,
+        release_thinking_placeholder: bool = False,
     ) -> None:
         """
         Send a response to the user.
 
-        Updates the "Thinking…" placeholder in-place if one exists,
-        otherwise posts a new message.  Long responses are split into
-        multiple messages to stay within Discord's 2 000-character limit.
+        By default, updates the "Thinking…" placeholder in-place if one exists,
+        otherwise posts a new message.  Set release_thinking_placeholder to
+        drop tracking without editing Thinking, then post the reply as new
+        messages.  Set replace_thinking_placeholder to False (without release)
+        to post alongside Thinking (e.g. tool status).  Long responses are split
+        into multiple messages to stay within Discord's 2 000-character limit.
         """
         tk = thinking_map_key(thread_id, source_message_id)
-        thinking_msg: Optional[nextcord.Message] = self._thinking_messages.pop(tk, None)
+        if release_thinking_placeholder:
+            self._thinking_messages.pop(tk, None)
+            thinking_msg = None
+        elif replace_thinking_placeholder:
+            thinking_msg = self._thinking_messages.pop(tk, None)
+        else:
+            thinking_msg = None
+
         channel = self._thread_channels.get(thread_id)
 
         chunks = _split_message(content)
@@ -111,7 +126,14 @@ class DiscordConnector(PlatformConnector):
             if i == 0 and thinking_msg:
                 await thinking_msg.edit(content=chunk)
             elif channel:
-                await channel.send(content=chunk)
+                sent = await channel.send(content=chunk)
+                if (
+                    tool_use_id
+                    and not replace_thinking_placeholder
+                    and not release_thinking_placeholder
+                    and i == 0
+                ):
+                    self._tool_progress_messages[tool_use_id] = sent
             else:
                 log_error(f"[Discord] send_message: no channel for thread {thread_id}")
                 return
@@ -163,19 +185,40 @@ class DiscordConnector(PlatformConnector):
         return view.decision
 
     async def on_tool_result(
-        self, tool_use_id: str, tool_result: Any, is_error: bool
+        self,
+        tool_use_id: str,
+        tool_result: Any,
+        is_error: bool,
+        *,
+        tool_name: Optional[str] = None,
     ) -> None:
-        """Edit the approval message to confirm the tool has finished."""
+        """Edit the approval or tool-status message when the tool has finished."""
         msg = self._approval_messages.pop(tool_use_id, None)
-        if not msg:
+        if msg:
+            status = "❌ Error during execution." if is_error else "✅ Results received."
+            try:
+                updated = msg.content.split("\n")[0]
+                await msg.edit(content=f"{updated}\n\n_{status}_", view=None)
+            except Exception as e:
+                log_error(
+                    f"[Discord] on_tool_result: failed to update approval message: {e}"
+                )
             return
-        status = "❌ Error during execution." if is_error else "✅ Results received."
+
+        prog = self._tool_progress_messages.pop(tool_use_id, None)
+        if not prog:
+            return
+        name = tool_name or "tool"
+        if is_error:
+            line = f"❌ `{name}` finished with an error."
+        else:
+            line = f"✅ `{name}` finished."
         try:
-            # Preserve the existing message text, just append the status line
-            updated = msg.content.split("\n")[0]  # keep the header line
-            await msg.edit(content=f"{updated}\n\n_{status}_", view=None)
+            await prog.edit(content=line)
         except Exception as e:
-            log_error(f"[Discord] on_tool_result: failed to update approval message: {e}")
+            log_error(
+                f"[Discord] on_tool_result: failed to update tool status message: {e}"
+            )
 
     async def start(self) -> None:
         """Start the Discord bot."""
@@ -265,6 +308,8 @@ class DiscordConnector(PlatformConnector):
                     thread_id,
                     "❌ Bot not properly initialized.",
                     source_message_id=source_message_id,
+                    replace_thinking_placeholder=False,
+                    release_thinking_placeholder=True,
                 )
 
             await self.bot.process_commands(message)
