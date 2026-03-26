@@ -96,6 +96,6 @@ def session_persist_path_from_env() -> Optional[Path]:
         return Path(explicit)
     flag = os.getenv("PERSIST_SESSION_IDS", "").lower().strip()
     if flag in ("1", "true", "yes"):
-        base = os.getenv("AGENT_DATA_DIR", "/app/data").strip()
+        base = os.getenv("AGENT_DATA_DIR", "/data").strip() or "/data"
         return Path(base) / "sessions.json"
     return None

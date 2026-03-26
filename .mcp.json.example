@@ -2,7 +2,7 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
     },
     "fetch": {
       "command": "python",

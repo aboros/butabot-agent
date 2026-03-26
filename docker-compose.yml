@@ -7,13 +7,16 @@ services:
     network_mode: host
     env_file:
       - .env
+    environment:
+      # Host path for the mount comes from .env; inside the container the workspace is always /data
+      AGENT_DATA_DIR: /data
     volumes:
       # Agent working directory — mount any folders you want the agent to access
-      - ${AGENT_DATA_DIR}:/app/data:rw
+      - ${AGENT_DATA_DIR}:/data:rw
 
       # Examples:
-      # - /path/to/project:/app/data/project:rw
-      # - /path/to/project:/app/data/project:ro   # read-only
+      # - /path/to/project:/data/project:rw
+      # - /path/to/project:/data/project:ro   # read-only
 
       # Mount configuration files (read-only)
       - ./.mcp.json:/app/.mcp.json:ro

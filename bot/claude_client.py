@@ -80,9 +80,10 @@ class ClaudeClient:
             "Task", "TodoWrite", "NotebookEdit", "ExitPlanMode",
         ]
 
+        _data_dir = os.getenv("AGENT_DATA_DIR", "/data").strip() or "/data"
         self.base_options = ClaudeAgentOptions(
             mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
-            cwd="/app/data",
+            cwd=_data_dir,
             disallowed_tools=disallowed_tools,
         )
         self._disallowed_tools = disallowed_tools

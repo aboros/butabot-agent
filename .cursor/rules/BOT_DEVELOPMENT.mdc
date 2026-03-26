@@ -124,7 +124,7 @@ Drupal / stdio-via-Docker patterns in this file remain valid **examples**; adapt
 - Prefer **`docker compose`** (v2 plugin), not legacy `docker-compose`.
 - **Entrypoint**: `CMD ["python", "-m", "bot.app"]` — there is **no** `main.py` in this repo.
 - **Healthcheck**: `pgrep -f "python.*bot.app"` matches the process name.
-- Mount **`AGENT_DATA_DIR`** (or equivalent) to `/app/data` for agent workspace; mount `./bot` for live code; mount `.mcp.json` read-only.
+- Mount **`AGENT_DATA_DIR`** (or equivalent) to `/data` for agent workspace; mount `./bot` for live code; mount `.mcp.json` read-only.
 - Image installs Python 3.11, Node 20+, `@anthropic-ai/claude-code`, and Docker CLI for MCP patterns that need it.
 
 ### 11. Testing

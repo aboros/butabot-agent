@@ -35,8 +35,8 @@ RUN npm install -g @anthropic-ai/claude-code@latest
 COPY bot/ ./bot/
 COPY .mcp.json .
 
-# Create data directory for agent workspace
-RUN mkdir -p /app/data
+# Create data directory for agent workspace (compose mounts the host volume here)
+RUN mkdir -p /data
 
 # Expose port (for health checks, though Socket Mode doesn't need it)
 EXPOSE 3000

@@ -42,7 +42,7 @@ The `PLATFORM` environment variable selects which connector is loaded at startup
 
 - **Queues**: Incoming messages are enqueued per stable `thread_id`. Different conversations can be processed in parallel up to `MAX_CONCURRENT_AGENT_TURNS` (default 8). The same `thread_id` is handled strictly in order.
 - **Conversation keys**: Connectors compute `thread_id` from platform events. Discord top-level mentions use `DISCORD_TOP_LEVEL_KEY` (`per_message`, `channel`, or `channel_user`). Slack uses `SLACK_KEY` (`thread_ts`, `channel`, or `channel_user`). See `.env.example`.
-- **Persistence**: Set `SESSIONS_JSON_PATH` or `PERSIST_SESSION_IDS=true` to save `thread_id → session_id` under `/app/data` (or `AGENT_DATA_DIR`) so Agent SDK `resume` works after restart.
+- **Persistence**: Set `SESSIONS_JSON_PATH` or `PERSIST_SESSION_IDS=true` to save `thread_id → session_id` under `/data` (or `AGENT_DATA_DIR`) so Agent SDK `resume` works after restart.
 
 Run unit tests from the repo root:
 
@@ -106,7 +106,7 @@ Edit `.mcp.json` to add MCP servers. **Do not put secrets in this file** — add
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/app/data"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
     },
     "brave-search": {
       "command": "npx",
