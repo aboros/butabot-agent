@@ -11,6 +11,7 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
 from .interface import IncomingMessage, PlatformConnector
+from ..conversation_key import build_slack_conversation_key, thinking_map_key
 from ..tool_approval import ToolApprovalManager
 from ..logger import (
     log_error,
@@ -40,9 +41,11 @@ class SlackConnector(PlatformConnector):
         self.tool_approval_manager = ToolApprovalManager(self.slack_client)
 
         self._bot_user_id: Optional[str] = None
-        # thread_id -> channel_id  (populated on first message in a thread)
+        # conversation_key -> channel_id
         self._thread_channels: Dict[str, str] = {}
-        # thread_id -> (channel_id, thinking_ts)  (cleared by send_message)
+        # conversation_key -> Slack API thread_ts for posting in that thread
+        self._slack_api_thread_ts: Dict[str, str] = {}
+        # thinking_map_key(conv_key, event_ts) -> (channel_id, thinking_ts)
         self._thinking_messages: Dict[str, Tuple[str, str]] = {}
 
         self._message_handler = None
@@ -54,20 +57,32 @@ class SlackConnector(PlatformConnector):
     # PlatformConnector interface
     # ------------------------------------------------------------------
 
-    async def send_message(self, thread_id: str, content: str) -> None:
+    def _slack_api_ts(self, thread_id: str) -> str:
+        """Slack thread_ts for API calls (may differ from conversation key)."""
+        return self._slack_api_thread_ts.get(thread_id, thread_id)
+
+    async def send_message(
+        self,
+        thread_id: str,
+        content: str,
+        *,
+        source_message_id: Optional[str] = None,
+    ) -> None:
         """
         Send a response to the user.
 
         If a "Thinking…" placeholder exists for this thread it is updated
         in-place; otherwise a new message is posted.
         """
-        # Consume thinking placeholder (if any) for this thread
-        pending = self._thinking_messages.pop(thread_id, None)
+        tk = thinking_map_key(thread_id, source_message_id)
+        pending = self._thinking_messages.pop(tk, None)
         if pending:
             channel_id, thinking_ts = pending
         else:
             channel_id = self._thread_channels.get(thread_id, thread_id)
             thinking_ts = None
+
+        api_ts = self._slack_api_ts(thread_id)
 
         _, content = self._detect_api_error(content)
         blocks = [{"type": "markdown", "text": content}]
@@ -76,7 +91,7 @@ class SlackConnector(PlatformConnector):
         if thinking_ts:
             log_slack_api_call(
                 method="chat_update",
-                thread_ts=thread_id,
+                thread_ts=api_ts,
                 ts=thinking_ts,
                 additional_info="type=response",
             )
@@ -85,19 +100,19 @@ class SlackConnector(PlatformConnector):
                 ts=thinking_ts,
                 text=text_fallback,
                 blocks=blocks,
-                thread_ts=thread_id,
+                thread_ts=api_ts,
                 unfurl_links=False,
                 unfurl_media=False,
             )
         else:
             log_slack_api_call(
                 method="chat_postMessage",
-                thread_ts=thread_id,
+                thread_ts=api_ts,
                 additional_info="type=response",
             )
             await self.slack_client.chat_postMessage(
                 channel=channel_id,
-                thread_ts=thread_id if thread_id != channel_id else None,
+                thread_ts=api_ts,
                 text=text_fallback,
                 blocks=blocks,
                 unfurl_links=False,
@@ -120,8 +135,10 @@ class SlackConnector(PlatformConnector):
             )
             return False
 
+        slack_ts = self._slack_api_ts(thread_id)
+
         approval_id, approved, message_ts = await self.tool_approval_manager.request_approval(
-            thread_id=thread_id,
+            thread_id=slack_ts,
             channel_id=channel_id,
             tool_name=tool_name,
             tool_input=tool_input,
@@ -182,13 +199,20 @@ class SlackConnector(PlatformConnector):
 
                 channel_id = event.get("channel")
                 thread_ts = event.get("thread_ts") or event.get("ts")
+                event_ts = event.get("ts")
 
                 bot_user_id = await self._get_bot_user_id()
                 user_message = event.get("text", "")
                 if f"<@{bot_user_id}>" in user_message:
                     user_message = user_message.replace(f"<@{bot_user_id}>", "").strip()
 
-                self._thread_channels[thread_ts] = channel_id
+                conv_key, _ = build_slack_conversation_key(
+                    thread_ts=thread_ts,
+                    channel_id=channel_id,
+                    user_id=event.get("user", ""),
+                )
+                self._thread_channels[conv_key] = channel_id
+                self._slack_api_thread_ts[conv_key] = thread_ts
 
                 if not user_message:
                     await say(
@@ -214,21 +238,29 @@ class SlackConnector(PlatformConnector):
                     unfurl_media=False,
                 )
                 thinking_ts = thinking_response.get("ts") if thinking_response else None
-                if thinking_ts:
-                    self._thinking_messages[thread_ts] = (channel_id, thinking_ts)
+                if thinking_ts and event_ts:
+                    self._thinking_messages[
+                        thinking_map_key(conv_key, event_ts)
+                    ] = (channel_id, thinking_ts)
 
                 if self._message_handler:
                     message = IncomingMessage(
-                        thread_id=thread_ts,
+                        thread_id=conv_key,
                         channel_id=channel_id,
                         user_id=event.get("user", ""),
                         content=user_message,
                         platform="slack",
+                        source_message_id=event_ts,
+                        slack_thread_ts=thread_ts,
                     )
                     await self._message_handler(message)
                 else:
                     log_error("handle_app_mention: no message handler registered")
-                    await self.send_message(thread_ts, "❌ Bot not properly initialized.")
+                    await self.send_message(
+                        conv_key,
+                        "❌ Bot not properly initialized.",
+                        source_message_id=event_ts,
+                    )
 
             except Exception as e:
                 log_error(f"handle_app_mention: unexpected error: {e}")

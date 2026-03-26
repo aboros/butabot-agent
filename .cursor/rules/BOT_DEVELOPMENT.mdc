@@ -10,10 +10,12 @@ alwaysApply: true
 
 The bot uses a **connector-based** architecture: one process, one platform, selected at startup via `PLATFORM`.
 
-- **Orchestrator** (`bot/app.py`): Loads the chosen `PlatformConnector`, constructs `SessionManager` + `ClaudeClient`, registers an async message handler, and runs `await connector.start()`.
+- **Orchestrator** (`bot/app.py`): Loads the chosen `PlatformConnector`, constructs `SessionManager` + `ClaudeClient` + **`ConversationDispatch`** (per-key FIFO + global concurrency cap), registers `handle_message` → `dispatch.submit`, and runs `await connector.start()`.
 - **Platform connectors** (`bot/connectors/`): Implement `PlatformConnector` — transport, mention handling, “Thinking…” UX, and **all** approval UI. `SlackConnector` uses Bolt + Socket Mode; `DiscordConnector` uses nextcord.
 - **Claude layer** (`bot/claude_client.py`): Wraps `ClaudeSDKClient` per thread, creates PreToolUse / PostToolUse hooks that delegate to `connector.request_approval` and `connector.on_tool_result`.
-- **Session layer** (`bot/session_manager.py`): Maps platform thread IDs to Agent SDK session IDs (in-memory).
+- **Session layer** (`bot/session_manager.py`): Maps conversation keys to Agent SDK session IDs; optional JSON persistence (`SESSIONS_JSON_PATH` / `PERSIST_SESSION_IDS`).
+- **Dispatch** (`bot/conversation_dispatch.py`): Per-`thread_id` queue + `MAX_CONCURRENT_AGENT_TURNS` semaphore.
+- **Keys** (`bot/conversation_key.py`): Env-driven `thread_id` for Slack (`SLACK_KEY`) and Discord top-level (`DISCORD_TOP_LEVEL_KEY`).
 - **Slack approval helper** (`bot/tool_approval.py`): `ToolApprovalManager` — used **only by** `SlackConnector` for Block Kit buttons and async wait/timeout. Discord implements approval inside `DiscordConnector`.
 
 **Key design decisions**
@@ -44,8 +46,8 @@ session_id = f"slack-{thread_id}-{uuid.uuid4()}"  # NO
 
 ### 2. Thread-based conversations
 
-- **Slack**: Use `thread_ts` or fall back to `ts` as the stable thread key (see `SlackConnector`).
-- **Discord**: Use thread/channel identifiers as implemented in `DiscordConnector` (threads preserve multi-turn context).
+- **Slack**: Conversation key from `build_slack_conversation_key` (`SLACK_KEY`: `thread_ts` | `channel` | `channel_user`). Slack API `thread_ts` for posting is stored separately when the key differs.
+- **Discord**: `build_discord_conversation_key` — in-thread uses the thread id; top-level uses `DISCORD_TOP_LEVEL_KEY` (`per_message` | `channel` | `channel_user`).
 - Isolated contexts per `thread_id`; session ids are persisted per thread for `resume`.
 
 ### 3. Agent SDK usage
@@ -98,9 +100,11 @@ Drupal / stdio-via-Docker patterns in this file remain valid **examples**; adapt
 
 | Module | Responsibility |
 |--------|----------------|
-| `bot/app.py` | Entry / orchestrator: `PLATFORM` → connector, `ClaudeClient`, message handler |
+| `bot/app.py` | Entry / orchestrator: `PLATFORM` → connector, `ClaudeClient`, `ConversationDispatch`, message handler |
 | `bot/claude_client.py` | `ClaudeSDKClient` per thread, hooks, MCP path, `disallowed_tools` |
-| `bot/session_manager.py` | Thread → `session_id` map |
+| `bot/session_manager.py` | Conversation key → `session_id` map; optional JSON persistence |
+| `bot/conversation_dispatch.py` | Per-key FIFO queues + global concurrency semaphore |
+| `bot/conversation_key.py` | Env-driven Slack/Discord conversation keys |
 | `bot/tool_approval.py` | Slack `ToolApprovalManager` only |
 | `bot/connectors/interface.py` | `PlatformConnector`, `IncomingMessage` |
 | `bot/connectors/slack_connector.py` | Slack Bolt, approvals, thinking message |

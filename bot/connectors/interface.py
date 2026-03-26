@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, Dict
+from typing import Any, Callable, Coroutine, Dict, Optional
 
 
 @dataclass
@@ -14,6 +14,10 @@ class IncomingMessage:
     user_id: str
     content: str
     platform: str
+    #: Incoming user message id (Discord snowflake or Slack message ts) for thinking placeholder correlation.
+    source_message_id: Optional[str] = None
+    #: Slack API thread_ts when it differs from thread_id (e.g. channel-scoped conversation keys).
+    slack_thread_ts: Optional[str] = None
 
 
 class PlatformConnector(ABC):
@@ -33,13 +37,21 @@ class PlatformConnector(ABC):
         self._message_handler = handler
 
     @abstractmethod
-    async def send_message(self, thread_id: str, content: str) -> None:
+    async def send_message(
+        self,
+        thread_id: str,
+        content: str,
+        *,
+        source_message_id: Optional[str] = None,
+    ) -> None:
         """
         Send a text message back to the user.
 
         Implementations may apply platform-specific formatting (e.g. Slack
         Block Kit markdown blocks) and should handle the update-in-place
         pattern (e.g. replacing a "Thinking…" placeholder) internally.
+        source_message_id selects which placeholder to replace when multiple
+        are queued for the same thread_id.
         """
 
     @abstractmethod
