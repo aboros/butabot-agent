@@ -1,6 +1,6 @@
 """Claude client wrapper for thread-aware conversations."""
 
-import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
@@ -32,6 +32,14 @@ from .logger import (
 )
 
 
+def _tool_approval_enabled_from_env() -> bool:
+    """Read TOOL_APPROVAL_ENABLED; when unset or empty, approval stays enabled."""
+    raw = os.getenv("TOOL_APPROVAL_ENABLED")
+    if raw is None or raw.strip() == "":
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 class ClaudeClient:
     """Wrapper around ClaudeSDKClient for thread-aware conversations."""
 
@@ -51,8 +59,19 @@ class ClaudeClient:
         """
         self.session_manager = session_manager
         self.connector = connector
+        self._tool_approval_enabled = _tool_approval_enabled_from_env()
         self._clients: Dict[str, ClaudeSDKClient] = {}  # thread_id -> client
         self._tools_logged = False
+
+        if self.connector:
+            log_info(
+                "Tool approval: "
+                + (
+                    "enabled"
+                    if self._tool_approval_enabled
+                    else "disabled — all tools run without prompts (TOOL_APPROVAL_ENABLED=false)"
+                )
+            )
 
         mcp_config_path = Path("/app/.mcp.json")
 
@@ -109,21 +128,32 @@ class ClaudeClient:
             decision_reason = ""
 
             if self.connector:
-                try:
-                    approved = await self.connector.request_approval(
-                        thread_id=thread_id,
-                        tool_name=tool_name,
-                        tool_input=tool_input,
-                        tool_use_id=tool_use_id or "",
-                    )
-                    decision = "allow" if approved else "deny"
-                    decision_reason = (
-                        f"Tool '{tool_name}' {'approved' if approved else 'denied'} by user"
-                    )
-                except Exception as e:
-                    log_error(f"pre_tool_use_hook: error requesting approval: {e}")
-                    decision = "deny"
-                    decision_reason = f"Approval request failed: {e}"
+                if self._tool_approval_enabled:
+                    try:
+                        approved = await self.connector.request_approval(
+                            thread_id=thread_id,
+                            tool_name=tool_name,
+                            tool_input=tool_input,
+                            tool_use_id=tool_use_id or "",
+                        )
+                        decision = "allow" if approved else "deny"
+                        decision_reason = (
+                            f"Tool '{tool_name}' {'approved' if approved else 'denied'} by user"
+                        )
+                    except Exception as e:
+                        log_error(f"pre_tool_use_hook: error requesting approval: {e}")
+                        decision = "deny"
+                        decision_reason = f"Approval request failed: {e}"
+                else:
+                    try:
+                        await self.connector.send_message(
+                            thread_id,
+                            f"🔧 Using `{tool_name}`…",
+                        )
+                    except Exception as e:
+                        log_error(f"pre_tool_use_hook: error sending tool notice: {e}")
+                    decision = "allow"
+                    decision_reason = "Tool approval disabled (TOOL_APPROVAL_ENABLED=false)"
 
             return {
                 "hookSpecificOutput": {
@@ -145,11 +175,18 @@ class ClaudeClient:
                 tool_result = input_data.get("tool_result", {})
                 is_error = input_data.get("is_error", False)
                 try:
-                    await self.connector.on_tool_result(
-                        tool_use_id=tool_use_id,
-                        tool_result=tool_result,
-                        is_error=is_error,
-                    )
+                    if self._tool_approval_enabled:
+                        await self.connector.on_tool_result(
+                            tool_use_id=tool_use_id,
+                            tool_result=tool_result,
+                            is_error=is_error,
+                        )
+                    else:
+                        if is_error:
+                            line = f"❌ `{tool_name}` finished with an error."
+                        else:
+                            line = f"✅ `{tool_name}` finished."
+                        await self.connector.send_message(thread_id, line)
                 except Exception as e:
                     log_error(f"post_tool_use_hook: error updating tool result: {e}")
 

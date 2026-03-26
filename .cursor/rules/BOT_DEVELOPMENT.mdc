@@ -173,6 +173,10 @@ Drupal / stdio-via-Docker patterns in this file remain valid **examples**; adapt
 
 - `DISCORD_TOKEN` (and any other vars required by `DiscordConnector` / README)
 
+**Tool approval (`ClaudeClient`)**
+
+- `TOOL_APPROVAL_ENABLED` — default `true` (or unset). Set to `false`, `0`, `no`, or `off` to run all tools without approval UI; the bot still posts chat lines when each tool starts and finishes (`🔧 Using …`, `✅` / `❌`).
+
 MCP: configured via `.mcp.json`, not a separate env for discovery.
 
 ### 15. Performance
