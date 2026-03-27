@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from .interface import IncomingMessage, PlatformConnector
 from ..conversation_key import build_discord_conversation_key, thinking_map_key
 from ..logger import log_error, log_info, log_warning
+from ..thinking_placeholder import get_thinking_placeholder
 
 load_dotenv()
 
@@ -76,6 +77,8 @@ class DiscordConnector(PlatformConnector):
         self._thread_channels: Dict[str, Any] = {}
         # thinking_map_key(thread_id, source_message_id) -> Message for "Thinking…"
         self._thinking_messages: Dict[str, nextcord.Message] = {}
+        # thinking_map_key -> accumulated text for thinking_log flow
+        self._thinking_tool_log: Dict[str, str] = {}
         # tool_use_id -> Message object for the approval prompt
         self._approval_messages: Dict[str, nextcord.Message] = {}
         # tool_use_id -> "Using …" status message (when approval is disabled)
@@ -112,6 +115,7 @@ class DiscordConnector(PlatformConnector):
         tk = thinking_map_key(thread_id, source_message_id)
         if release_thinking_placeholder:
             self._thinking_messages.pop(tk, None)
+            self._thinking_tool_log.pop(tk, None)
             thinking_msg = None
         elif replace_thinking_placeholder:
             thinking_msg = self._thinking_messages.pop(tk, None)
@@ -184,6 +188,54 @@ class DiscordConnector(PlatformConnector):
 
         return view.decision
 
+    async def append_thinking_tool_feedback(
+        self,
+        thread_id: str,
+        source_message_id: Optional[str],
+        line: str,
+    ) -> None:
+        """Append tool lines after the Thinking placeholder (thinking_log flow)."""
+        tk = thinking_map_key(thread_id, source_message_id)
+        thinking_msg = self._thinking_messages.get(tk)
+        if not thinking_msg:
+            log_error(
+                f"[Discord] append_thinking_tool_feedback: no Thinking message for key {tk!r}"
+            )
+            return
+
+        prev = self._thinking_tool_log.get(tk, "")
+        if not prev:
+            base = (thinking_msg.content or "").strip()
+            body = f"{base}\n{line}" if base else line
+        else:
+            body = f"{prev}\n{line}"
+
+        if len(body) > _MAX_MESSAGE_LENGTH:
+            body = body[: _MAX_MESSAGE_LENGTH - 20] + "\n… _(truncated)_"
+
+        self._thinking_tool_log[tk] = body
+        try:
+            await thinking_msg.edit(content=body)
+        except Exception as e:
+            log_error(f"[Discord] append_thinking_tool_feedback: {e}")
+
+    async def notify_tool_running(
+        self,
+        thread_id: str,
+        tool_name: str,
+        tool_use_id: str,
+    ) -> None:
+        """Update flow: replace the approval message with the 'Using …' status."""
+        if not tool_use_id:
+            return
+        msg = self._approval_messages.get(tool_use_id)
+        if not msg:
+            return
+        try:
+            await msg.edit(content=f"🔧 Using `{tool_name}`…")
+        except Exception as e:
+            log_error(f"[Discord] notify_tool_running: {e}")
+
     async def on_tool_result(
         self,
         tool_use_id: str,
@@ -191,34 +243,37 @@ class DiscordConnector(PlatformConnector):
         is_error: bool,
         *,
         tool_name: Optional[str] = None,
+        update_approval_message: bool = True,
+        update_progress_message: bool = True,
     ) -> None:
         """Edit the approval or tool-status message when the tool has finished."""
-        msg = self._approval_messages.pop(tool_use_id, None)
-        if msg:
-            status = "❌ Error during execution." if is_error else "✅ Results received."
-            try:
-                updated = msg.content.split("\n")[0]
-                await msg.edit(content=f"{updated}\n\n_{status}_", view=None)
-            except Exception as e:
-                log_error(
-                    f"[Discord] on_tool_result: failed to update approval message: {e}"
-                )
+        prog = self._tool_progress_messages.pop(tool_use_id, None)
+        if prog:
+            if update_progress_message:
+                name = tool_name or "tool"
+                if is_error:
+                    line = f"❌ `{name}` finished with an error."
+                else:
+                    line = f"✅ `{name}` finished."
+                try:
+                    await prog.edit(content=line)
+                except Exception as e:
+                    log_error(
+                        f"[Discord] on_tool_result: failed to update tool status message: {e}"
+                    )
             return
 
-        prog = self._tool_progress_messages.pop(tool_use_id, None)
-        if not prog:
-            return
-        name = tool_name or "tool"
-        if is_error:
-            line = f"❌ `{name}` finished with an error."
-        else:
-            line = f"✅ `{name}` finished."
-        try:
-            await prog.edit(content=line)
-        except Exception as e:
-            log_error(
-                f"[Discord] on_tool_result: failed to update tool status message: {e}"
-            )
+        msg = self._approval_messages.pop(tool_use_id, None)
+        if msg:
+            if update_approval_message:
+                status = "❌ Error during execution." if is_error else "✅ Results received."
+                try:
+                    updated = msg.content.split("\n")[0]
+                    await msg.edit(content=f"{updated}\n\n_{status}_", view=None)
+                except Exception as e:
+                    log_error(
+                        f"[Discord] on_tool_result: failed to update approval message: {e}"
+                    )
 
     async def start(self) -> None:
         """Start the Discord bot."""
@@ -281,8 +336,8 @@ class DiscordConnector(PlatformConnector):
                 await message.channel.send("Hello! How can I help you?")
                 return
 
-            # Post "Thinking…" placeholder before handing off to the agent
-            thinking_msg = await message.channel.send("🤔 Thinking...")
+            # Post Thinking placeholder before handing off to the agent
+            thinking_msg = await message.channel.send(get_thinking_placeholder())
             self._thinking_messages[
                 thinking_map_key(thread_id, source_message_id)
             ] = thinking_msg

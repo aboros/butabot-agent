@@ -226,7 +226,7 @@ class ToolApprovalManager:
         
         if not approval_id:
             return False
-        
+
         approval_data = self._pending_approvals.get(approval_id)
         if not approval_data or not approval_data.get("message_ts"):
             return False
@@ -301,7 +301,71 @@ class ToolApprovalManager:
         """
         if approval_id in self._pending_approvals:
             self._pending_approvals[approval_id]["tool_use_id"] = tool_use_id
-    
+
+    def has_tool_use_tracking(self, tool_use_id: str) -> bool:
+        """True if this tool_use_id still has Slack-side approval follow-up state."""
+        if tool_use_id in self._approvals_by_tool_use_id:
+            return True
+        return any(
+            data.get("tool_use_id") == tool_use_id
+            for data in self._pending_approvals.values()
+        )
+
+    def discard_tool_use_tracking(self, tool_use_id: str) -> None:
+        """Drop internal state after a tool run without updating the Slack message."""
+        approval_id = self._approvals_by_tool_use_id.get(tool_use_id)
+        if not approval_id:
+            for aid, data in list(self._pending_approvals.items()):
+                if data.get("tool_use_id") == tool_use_id:
+                    approval_id = aid
+                    break
+        if not approval_id:
+            return
+        if tool_use_id in self._approvals_by_tool_use_id:
+            del self._approvals_by_tool_use_id[tool_use_id]
+        self._cleanup_approval(approval_id)
+
+    async def set_approval_message_using(self, tool_use_id: str, tool_name: str) -> bool:
+        """
+        Edit the approval message in-place to the "Using …" state (update flow).
+
+        Called after the user approves and before the tool executes.
+        """
+        approval_id = self._approvals_by_tool_use_id.get(tool_use_id)
+        if not approval_id:
+            for aid, data in self._pending_approvals.items():
+                if data.get("tool_use_id") == tool_use_id:
+                    approval_id = aid
+                    break
+        if not approval_id:
+            return False
+        approval_data = self._pending_approvals.get(approval_id)
+        if not approval_data or not approval_data.get("message_ts"):
+            return False
+        channel_id = approval_data.get("channel_id")
+        message_ts = approval_data.get("message_ts")
+        line = f"🔧 Using `{tool_name}`…"
+        blocks = [{"type": "markdown", "text": line}]
+        try:
+            log_slack_api_call(
+                method="chat_update",
+                thread_ts=approval_data.get("thread_id"),
+                ts=message_ts,
+                additional_info=f"type=tool_using | tool={tool_name} | tool_use_id={tool_use_id}",
+            )
+            await self.slack_client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                text=f"Using {tool_name}",
+                blocks=blocks,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            return True
+        except Exception as e:
+            log_error(f"Error setting approval message to using: {e}")
+            return False
+
     def format_approval_message(self, tool_name: str, tool_input: Dict[str, Any], approved: bool = True) -> list:
         """
         Format an informative approval/denial message as Slack blocks.

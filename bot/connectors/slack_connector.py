@@ -12,6 +12,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .interface import IncomingMessage, PlatformConnector
 from ..conversation_key import build_slack_conversation_key, thinking_map_key
+from ..thinking_placeholder import get_thinking_placeholder
 from ..tool_approval import ToolApprovalManager
 from ..logger import (
     log_error,
@@ -21,6 +22,9 @@ from ..logger import (
 )
 
 load_dotenv()
+
+# Slack Block Kit markdown text practical limit (leave margin under API caps)
+_SLACK_THINKING_LOG_MAX_CHARS = 3500
 
 
 class SlackConnector(PlatformConnector):
@@ -47,6 +51,10 @@ class SlackConnector(PlatformConnector):
         self._slack_api_thread_ts: Dict[str, str] = {}
         # thinking_map_key(conv_key, event_ts) -> (channel_id, thinking_ts)
         self._thinking_messages: Dict[str, Tuple[str, str]] = {}
+        # thinking_map_key -> accumulated text for thinking_log flow
+        self._thinking_tool_log: Dict[str, str] = {}
+        # thinking_map_key -> plaintext of the Thinking message as posted (for first append)
+        self._thinking_message_plaintext: Dict[str, str] = {}
         # tool_use_id -> (channel_id, message_ts) for "Using …" when approval is off
         self._tool_progress_messages: Dict[str, Tuple[str, str]] = {}
 
@@ -87,9 +95,13 @@ class SlackConnector(PlatformConnector):
         tk = thinking_map_key(thread_id, source_message_id)
         if release_thinking_placeholder:
             self._thinking_messages.pop(tk, None)
+            self._thinking_tool_log.pop(tk, None)
+            self._thinking_message_plaintext.pop(tk, None)
             pending = None
         elif replace_thinking_placeholder:
             pending = self._thinking_messages.pop(tk, None)
+            self._thinking_tool_log.pop(tk, None)
+            self._thinking_message_plaintext.pop(tk, None)
         else:
             pending = None
 
@@ -185,6 +197,76 @@ class SlackConnector(PlatformConnector):
 
         return approved
 
+    async def append_thinking_tool_feedback(
+        self,
+        thread_id: str,
+        source_message_id: Optional[str],
+        line: str,
+    ) -> None:
+        """Append tool lines after the Thinking placeholder (thinking_log flow)."""
+        tk = thinking_map_key(thread_id, source_message_id)
+        pending = self._thinking_messages.get(tk)
+        if not pending:
+            log_error(
+                f"append_thinking_tool_feedback: no Thinking message for key {tk!r}"
+            )
+            return
+        channel_id, thinking_ts = pending
+        api_ts = self._slack_api_ts(thread_id)
+
+        prev = self._thinking_tool_log.get(tk, "")
+        if not prev:
+            base = self._thinking_message_plaintext.get(tk, "")
+            if not base:
+                log_error(
+                    f"append_thinking_tool_feedback: missing stored Thinking text for {tk!r}"
+                )
+                base = ""
+            body = f"{base}\n{line}" if base else line
+        else:
+            body = f"{prev}\n{line}"
+
+        if len(body) > _SLACK_THINKING_LOG_MAX_CHARS:
+            body = body[: _SLACK_THINKING_LOG_MAX_CHARS - 20] + "\n… _(truncated)_"
+
+        self._thinking_tool_log[tk] = body
+        blocks = [{"type": "markdown", "text": body}]
+        text_fallback = self._blocks_to_plain_text(blocks)
+        try:
+            log_slack_api_call(
+                method="chat_update",
+                thread_ts=api_ts,
+                ts=thinking_ts,
+                additional_info="type=thinking_log",
+            )
+            await self.slack_client.chat_update(
+                channel=channel_id,
+                ts=thinking_ts,
+                text=text_fallback,
+                blocks=blocks,
+                thread_ts=api_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except Exception as e:
+            log_error(f"append_thinking_tool_feedback: chat_update failed: {e}")
+
+    async def notify_tool_running(
+        self,
+        thread_id: str,
+        tool_name: str,
+        tool_use_id: str,
+    ) -> None:
+        """Update flow: replace the approval message with the 'Using …' status."""
+        if not tool_use_id:
+            return
+        try:
+            await self.tool_approval_manager.set_approval_message_using(
+                tool_use_id, tool_name
+            )
+        except Exception as e:
+            log_error(f"notify_tool_running: {e}")
+
     async def on_tool_result(
         self,
         tool_use_id: str,
@@ -192,46 +274,53 @@ class SlackConnector(PlatformConnector):
         is_error: bool,
         *,
         tool_name: Optional[str] = None,
+        update_approval_message: bool = True,
+        update_progress_message: bool = True,
     ) -> None:
         """Update the approval or tool-status message once a tool has finished."""
         prog = self._tool_progress_messages.pop(tool_use_id, None)
         if prog:
-            channel_id, msg_ts = prog
-            name = tool_name or "tool"
-            if is_error:
-                line = f"❌ `{name}` finished with an error."
-            else:
-                line = f"✅ `{name}` finished."
-            blocks = [{"type": "markdown", "text": line}]
-            text_fallback = self._blocks_to_plain_text(blocks)
-            try:
-                log_slack_api_call(
-                    method="chat_update",
-                    ts=msg_ts,
-                    additional_info="type=tool_status_result",
-                )
-                await self.slack_client.chat_update(
-                    channel=channel_id,
-                    ts=msg_ts,
-                    text=text_fallback,
-                    blocks=blocks,
-                    unfurl_links=False,
-                    unfurl_media=False,
-                )
-            except Exception as e:
-                log_error(
-                    f"on_tool_result: failed to update tool status message: {e}"
-                )
+            if update_progress_message:
+                channel_id, msg_ts = prog
+                name = tool_name or "tool"
+                if is_error:
+                    line = f"❌ `{name}` finished with an error."
+                else:
+                    line = f"✅ `{name}` finished."
+                blocks = [{"type": "markdown", "text": line}]
+                text_fallback = self._blocks_to_plain_text(blocks)
+                try:
+                    log_slack_api_call(
+                        method="chat_update",
+                        ts=msg_ts,
+                        additional_info="type=tool_status_result",
+                    )
+                    await self.slack_client.chat_update(
+                        channel=channel_id,
+                        ts=msg_ts,
+                        text=text_fallback,
+                        blocks=blocks,
+                        unfurl_links=False,
+                        unfurl_media=False,
+                    )
+                except Exception as e:
+                    log_error(
+                        f"on_tool_result: failed to update tool status message: {e}"
+                    )
             return
 
-        try:
-            await self.tool_approval_manager.update_approval_message_with_result(
-                tool_use_id=tool_use_id,
-                tool_result=tool_result,
-                is_error=is_error,
-            )
-        except Exception as e:
-            log_error(f"on_tool_result: failed to update approval message: {e}")
+        if self.tool_approval_manager.has_tool_use_tracking(tool_use_id):
+            if update_approval_message:
+                try:
+                    await self.tool_approval_manager.update_approval_message_with_result(
+                        tool_use_id=tool_use_id,
+                        tool_result=tool_result,
+                        is_error=is_error,
+                    )
+                except Exception as e:
+                    log_error(f"on_tool_result: failed to update approval message: {e}")
+            else:
+                self.tool_approval_manager.discard_tool_use_tracking(tool_use_id)
 
     async def start(self) -> None:
         """Start the bot in Socket Mode."""
@@ -293,23 +382,24 @@ class SlackConnector(PlatformConnector):
                     return
 
                 # Post thinking placeholder before handing off to the agent
+                thinking_placeholder = get_thinking_placeholder()
                 log_slack_api_call(
                     method="say",
                     thread_ts=thread_ts,
                     additional_info="type=thinking",
                 )
                 thinking_response = await say(
-                    text="🤔 Thinking...",
-                    blocks=[{"type": "markdown", "text": "🤔 Thinking..."}],
+                    text=thinking_placeholder,
+                    blocks=[{"type": "markdown", "text": thinking_placeholder}],
                     thread_ts=thread_ts,
                     unfurl_links=False,
                     unfurl_media=False,
                 )
                 thinking_ts = thinking_response.get("ts") if thinking_response else None
                 if thinking_ts and event_ts:
-                    self._thinking_messages[
-                        thinking_map_key(conv_key, event_ts)
-                    ] = (channel_id, thinking_ts)
+                    tk_think = thinking_map_key(conv_key, event_ts)
+                    self._thinking_messages[tk_think] = (channel_id, thinking_ts)
+                    self._thinking_message_plaintext[tk_think] = thinking_placeholder
 
                 if self._message_handler:
                     message = IncomingMessage(

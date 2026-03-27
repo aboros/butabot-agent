@@ -2,6 +2,7 @@
 
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
@@ -40,6 +41,62 @@ def _tool_approval_enabled_from_env() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _parse_optional_env_bool(name: str) -> Optional[bool]:
+    """Return True/False if the env var is set to a non-empty value, else None."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _tool_feedback_settings_from_env() -> tuple[bool, bool, bool]:
+    """
+    Per-flag tool chat feedback (Slack / Discord).
+
+    TOOL_FEEDBACK_START — "🔧 Using …" when approval is off.
+    TOOL_FEEDBACK_FINISH — ✅/❌ on that status message when the tool completes.
+    TOOL_FEEDBACK_APPROVAL_RESULT — update the approval message after the tool runs.
+
+    Legacy: if TOOL_FEEDBACK_ENABLED is set, it acts as the default for any flag
+    not explicitly set (false mutes all three unless overridden).
+    """
+    legacy = _parse_optional_env_bool("TOOL_FEEDBACK_ENABLED")
+
+    def one(flag_name: str) -> bool:
+        v = _parse_optional_env_bool(flag_name)
+        if v is not None:
+            return v
+        if legacy is not None:
+            return legacy
+        return True
+
+    return (
+        one("TOOL_FEEDBACK_START"),
+        one("TOOL_FEEDBACK_FINISH"),
+        one("TOOL_FEEDBACK_APPROVAL_RESULT"),
+    )
+
+
+def _tool_feedback_flow_from_env() -> str:
+    """
+    TOOL_FEEDBACK_FLOW: normal (default), update, or thinking_log.
+
+    update — after approval, the same message is edited to "Using …", then to
+    the final result (single in-thread status line).
+    thinking_log — with approval off, tool lines append under the Thinking
+    placeholder; final reply is still a new message (release_thinking).
+    normal — current behavior (e.g. Slack approve button updates the message
+    to an approved/executing state; finish updates separately without a dedicated
+    notify_tool_running step).
+    """
+    raw = (os.getenv("TOOL_FEEDBACK_FLOW") or "").strip().lower()
+    if raw in ("update", "in_place", "chain"):
+        return "update"
+    if raw in ("thinking_log", "thinking-log", "thinking_stream", "thinking-stream"):
+        return "thinking_log"
+    return "normal"
+
+
 class ClaudeClient:
     """Wrapper around ClaudeSDKClient for thread-aware conversations."""
 
@@ -60,6 +117,14 @@ class ClaudeClient:
         self.session_manager = session_manager
         self.connector = connector
         self._tool_approval_enabled = _tool_approval_enabled_from_env()
+        (
+            self._feedback_start,
+            self._feedback_finish,
+            self._feedback_approval_result,
+        ) = _tool_feedback_settings_from_env()
+        self._feedback_flow = _tool_feedback_flow_from_env()
+        #: Per active agent turn: maps thread_id -> source_message_id for Thinking key.
+        self._turn_source_message_id: Dict[str, Optional[str]] = {}
         self._clients: Dict[str, ClaudeSDKClient] = {}  # thread_id -> client
         self._tools_logged = False
 
@@ -72,6 +137,18 @@ class ClaudeClient:
                     else "disabled — all tools run without prompts (TOOL_APPROVAL_ENABLED=false)"
                 )
             )
+            log_info(
+                "Tool feedback (chat): "
+                f"flow={self._feedback_flow} "
+                f"start={self._feedback_start} "
+                f"finish={self._feedback_finish} "
+                f"approval_result={self._feedback_approval_result}"
+            )
+            if self._feedback_flow == "thinking_log" and self._tool_approval_enabled:
+                log_info(
+                    "thinking_log requires TOOL_APPROVAL_ENABLED=false; "
+                    "tool feedback uses normal channels until approval is off"
+                )
 
         mcp_config_path = Path("/app/.mcp.json")
 
@@ -81,22 +158,29 @@ class ClaudeClient:
         ]
 
         _data_dir = os.getenv("AGENT_DATA_DIR", "/data").strip() or "/data"
+        # Project skills: `.claude/skills/` under the agent workspace (AGENT_DATA_DIR / cwd).
+        # Requires setting_sources + Skill in allowed_tools per Agent SDK.
         self.base_options = ClaudeAgentOptions(
             mcp_servers=mcp_config_path if mcp_config_path.exists() else {},
             cwd=_data_dir,
+            setting_sources=["project"],
+            allowed_tools=["Skill"],
             disallowed_tools=disallowed_tools,
         )
         self._disallowed_tools = disallowed_tools
+        log_info(
+            f"Agent workspace (cwd): {_data_dir} — load project skills from "
+            f"{_data_dir}/.claude/skills/ (setting_sources includes project)"
+        )
 
     async def _get_or_create_client(self, thread_id: str) -> ClaudeSDKClient:
         """Get or create a ClaudeSDKClient for a thread."""
         if thread_id not in self._clients:
             stored_session_id = self.session_manager.get_session(thread_id)
 
-            options = ClaudeAgentOptions(
-                mcp_servers=self.base_options.mcp_servers,
+            options = replace(
+                self.base_options,
                 resume=stored_session_id if stored_session_id else None,
-                disallowed_tools=self.base_options.disallowed_tools,
                 hooks=self._create_hooks(thread_id),
             )
 
@@ -106,6 +190,10 @@ class ClaudeClient:
             log_info(f"New agent client created for thread | thread_ts={thread_id}")
 
         return self._clients[thread_id]
+
+    def _effective_thinking_log(self) -> bool:
+        """Stream tool lines into the Thinking message (requires approval off)."""
+        return self._feedback_flow == "thinking_log" and not self._tool_approval_enabled
 
     def _create_hooks(self, thread_id: str) -> Dict[str, list]:
         """
@@ -141,20 +229,48 @@ class ClaudeClient:
                         decision_reason = (
                             f"Tool '{tool_name}' {'approved' if approved else 'denied'} by user"
                         )
+                        if (
+                            approved
+                            and self._feedback_flow == "update"
+                            and self._feedback_start
+                        ):
+                            try:
+                                await self.connector.notify_tool_running(
+                                    thread_id=thread_id,
+                                    tool_name=tool_name,
+                                    tool_use_id=tool_use_id or "",
+                                )
+                            except Exception as e:
+                                log_error(
+                                    f"pre_tool_use_hook: notify_tool_running: {e}"
+                                )
                     except Exception as e:
                         log_error(f"pre_tool_use_hook: error requesting approval: {e}")
                         decision = "deny"
                         decision_reason = f"Approval request failed: {e}"
                 else:
-                    try:
-                        await self.connector.send_message(
-                            thread_id,
-                            f"🔧 Using `{tool_name}`…",
-                            replace_thinking_placeholder=False,
-                            tool_use_id=tool_use_id or None,
-                        )
-                    except Exception as e:
-                        log_error(f"pre_tool_use_hook: error sending tool notice: {e}")
+                    sid = self._turn_source_message_id.get(thread_id)
+                    if self._effective_thinking_log() and sid and self._feedback_start:
+                        try:
+                            await self.connector.append_thinking_tool_feedback(
+                                thread_id,
+                                sid,
+                                f"🔧 Using `{tool_name}`…",
+                            )
+                        except Exception as e:
+                            log_error(
+                                f"pre_tool_use_hook: append_thinking_tool_feedback: {e}"
+                            )
+                    elif self._feedback_start:
+                        try:
+                            await self.connector.send_message(
+                                thread_id,
+                                f"🔧 Using `{tool_name}`…",
+                                replace_thinking_placeholder=False,
+                                tool_use_id=tool_use_id or None,
+                            )
+                        except Exception as e:
+                            log_error(f"pre_tool_use_hook: error sending tool notice: {e}")
                     decision = "allow"
                     decision_reason = "Tool approval disabled (TOOL_APPROVAL_ENABLED=false)"
 
@@ -177,15 +293,49 @@ class ClaudeClient:
             if self.connector and tool_use_id:
                 tool_result = input_data.get("tool_result", {})
                 is_error = input_data.get("is_error", False)
-                try:
-                    await self.connector.on_tool_result(
-                        tool_use_id=tool_use_id,
-                        tool_result=tool_result,
-                        is_error=is_error,
-                        tool_name=tool_name,
-                    )
-                except Exception as e:
-                    log_error(f"post_tool_use_hook: error updating tool result: {e}")
+                if self._tool_approval_enabled:
+                    try:
+                        await self.connector.on_tool_result(
+                            tool_use_id=tool_use_id,
+                            tool_result=tool_result,
+                            is_error=is_error,
+                            tool_name=tool_name,
+                            update_approval_message=self._feedback_approval_result,
+                            update_progress_message=False,
+                        )
+                    except Exception as e:
+                        log_error(f"post_tool_use_hook: error updating tool result: {e}")
+                elif self._effective_thinking_log():
+                    sid = self._turn_source_message_id.get(thread_id)
+                    if sid and self._feedback_finish:
+                        name = tool_name or "tool"
+                        line = (
+                            f"❌ `{name}` finished with an error."
+                            if is_error
+                            else f"✅ `{name}` finished."
+                        )
+                        try:
+                            await self.connector.append_thinking_tool_feedback(
+                                thread_id,
+                                sid,
+                                line,
+                            )
+                        except Exception as e:
+                            log_error(
+                                f"post_tool_use_hook: append_thinking_tool_feedback: {e}"
+                            )
+                elif self._feedback_start or self._feedback_finish:
+                    try:
+                        await self.connector.on_tool_result(
+                            tool_use_id=tool_use_id,
+                            tool_result=tool_result,
+                            is_error=is_error,
+                            tool_name=tool_name,
+                            update_approval_message=False,
+                            update_progress_message=self._feedback_finish,
+                        )
+                    except Exception as e:
+                        log_error(f"post_tool_use_hook: error updating tool result: {e}")
 
             return {}
 
@@ -198,12 +348,15 @@ class ClaudeClient:
         self,
         thread_id: str,
         user_message: str,
+        *,
+        source_message_id: Optional[str] = None,
     ) -> AsyncIterator[Message]:
         """
         Send a message to Claude and stream responses.
 
         Yields Messages from Claude (AssistantMessage, ToolUseBlock, etc.)
         """
+        self._turn_source_message_id[thread_id] = source_message_id
         try:
             client = await self._get_or_create_client(thread_id)
 
@@ -223,11 +376,7 @@ class ClaudeClient:
                         if isinstance(data, dict) and "tools" in data and not self._tools_logged:
                             tools = data.get("tools", [])
                             if isinstance(tools, list):
-                                log_info(f"Tools available: {len(tools)} total")
-                                if self._disallowed_tools:
-                                    log_info(f"Disallowed tools: {', '.join(sorted(self._disallowed_tools))}")
-                                else:
-                                    log_info("Disallowed tools: none")
+                                log_tools_startup(len(tools), self._disallowed_tools)
                                 self._tools_logged = True
                         continue
 
@@ -269,15 +418,25 @@ class ClaudeClient:
             import traceback
             traceback.print_exc(file=sys.stderr)
             raise
+        finally:
+            self._turn_source_message_id.pop(thread_id, None)
 
-    async def get_text_response(self, thread_id: str, user_message: str) -> str:
+    async def get_text_response(
+        self,
+        thread_id: str,
+        user_message: str,
+        *,
+        source_message_id: Optional[str] = None,
+    ) -> str:
         """
         Send a message and collect all text blocks into a single string.
 
         This is the primary method used by the orchestrator.
         """
         text_parts = []
-        async for message in self.send_message(thread_id, user_message):
+        async for message in self.send_message(
+            thread_id, user_message, source_message_id=source_message_id
+        ):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):

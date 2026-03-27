@@ -92,14 +92,42 @@ class PlatformConnector(ABC):
         is_error: bool,
         *,
         tool_name: Optional[str] = None,
+        update_approval_message: bool = True,
+        update_progress_message: bool = True,
     ) -> None:
         """
         Called after a tool finishes executing.
 
-        Implementations update the approval prompt in-place when tool approval
-        is enabled, or the ephemeral "Using …" status message when approval is
-        disabled and that message was recorded for tool_use_id.
+        When ``update_progress_message`` is True, implementations update the
+        standalone "Using …" status message (approval off). When
+        ``update_approval_message`` is True, they update the approval message
+        with completion state (approval on). If False, they should still drop
+        any internal tracking for that tool_use_id without posting updates.
         """
+
+    async def notify_tool_running(
+        self,
+        thread_id: str,
+        tool_name: str,
+        tool_use_id: str,
+    ) -> None:
+        """
+        Update flow only: after approval, edit the same approval message to show
+        that the tool is running (e.g. "🔧 Using …"). Default: no-op.
+        """
+        return
+
+    async def append_thinking_tool_feedback(
+        self,
+        thread_id: str,
+        source_message_id: Optional[str],
+        line: str,
+    ) -> None:
+        """
+        thinking_log flow: append a line after the Thinking placeholder (and after
+        any prior tool lines for this turn). Default: no-op.
+        """
+        return
 
     @abstractmethod
     async def start(self) -> None:

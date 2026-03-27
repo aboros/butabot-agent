@@ -53,7 +53,9 @@ async def main() -> None:
     async def process_message(message: IncomingMessage) -> None:
         try:
             response = await claude_client.get_text_response(
-                message.thread_id, message.content
+                message.thread_id,
+                message.content,
+                source_message_id=message.source_message_id,
             )
             if not response:
                 response = "✅ Done. (No text response — tools may have been executed.)"
