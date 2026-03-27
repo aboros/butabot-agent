@@ -1,0 +1,36 @@
+---
+description: Claude Agent SDK — Agent Skills (filesystem, Skill tool, cwd, tool policy)
+globs: bot/claude_client.py,**/.claude/skills/**/*
+alwaysApply: false
+---
+
+# Agent Skills (Claude Agent SDK)
+
+Official reference: [Agent Skills in the SDK](https://platform.claude.com/docs/en/agent-sdk/skills.md).
+
+## How Skills load
+
+- Skills are filesystem artifacts: each skill is a directory with `SKILL.md` (YAML frontmatter + body). Project skills live under `.claude/skills/`; user-wide skills under `~/.claude/skills/`. Plugins can bundle skills too.
+- **Default SDK behavior does not load filesystem settings.** To discover Skills, set `setting_sources` (Python) / `settingSources` (TS), e.g. `["user", "project"]`. Include `"project"` if you want repo `.claude/skills/` and project settings; include `"user"` for personal skills.
+- **`cwd` matters:** Skills resolve relative to the configured working directory. Point `cwd` at the project root that contains `.claude/skills/` when you want those project skills.
+
+## Enabling the Skill tool
+
+- Add **`"Skill"`** to **`allowed_tools`**. Without it, the model cannot invoke Skills even if they are discovered.
+- Other tools (Read, Bash, etc.) are still governed by the same `allowed_tools` / `disallowed_tools` / permission hooks as the rest of the session.
+
+## SDK vs CLI — `allowed-tools` in SKILL.md
+
+- The **`allowed-tools` frontmatter field in `SKILL.md` applies to Claude Code CLI usage, not when using Skills through the SDK. **In SDK apps, control tools only via the main `ClaudeAgentOptions`** (`allowed_tools`, `disallowed_tools`, `can_use_tool`, etc.).
+
+## Troubleshooting (quick)
+
+| Symptom | Check |
+|--------|--------|
+| No Skills found | `setting_sources` includes the sources you need; `cwd` points at the tree that contains `.claude/skills/`. |
+| Skill never runs | `"Skill"` is in `allowed_tools`; improve the Skill `description` in frontmatter so it matches user tasks. |
+| Wrong tools inside a Skill | Not fixable via SKILL.md `allowed-tools` in SDK — adjust `allowed_tools` / `disallowed_tools` on `ClaudeAgentOptions`. |
+
+## This repo
+
+- `bot/claude_client.py` builds `ClaudeAgentOptions` (e.g. `cwd`, `disallowed_tools`). To use Skills in production, add `setting_sources` and ensure `"Skill"` is allowed (and not blocked by policy), consistent with the doc above.
